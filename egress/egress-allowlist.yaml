@@ -1,0 +1,59 @@
+# egress-allowlist.yaml
+# 
+# Egress Allowlist Configuration
+# This file is version-controlled and requires PR approval for changes.
+#
+# Format:
+#   - destination: hostname or IP/CIDR
+#     port: port number
+#     protocol: http | tcp
+#     description: optional description
+#
+# Rules:
+#   - protocol: http  → Uses HTTP_PROXY, matched by hostname
+#   - protocol: tcp   → Matched by IP (hostnames resolved at deploy time)
+
+egress:
+  # ─────────────────────────────────────────────────────────────────────────
+  # HTTP/HTTPS destinations (matched by hostname via HTTP_PROXY)
+  # ─────────────────────────────────────────────────────────────────────────
+  - destination: api.github.com
+    port: 443
+    protocol: http
+    description: "GitHub API"
+
+  - destination: raw.githubusercontent.com
+    port: 443
+    protocol: http
+    description: "GitHub raw content"
+
+  - destination: internal-api.corp.local
+    port: 80
+    protocol: http
+    description: "Internal REST API"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # TCP destinations with hostnames (resolved to IP at deploy time)
+  # ─────────────────────────────────────────────────────────────────────────
+  - destination: internal-redis.net.intra
+    port: 30672
+    protocol: tcp
+    description: "Redis cache"
+
+  - destination: kafka.internal.corp
+    port: 9093
+    protocol: tcp
+    description: "Kafka cluster"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # TCP destinations with IP/CIDR (used directly)
+  # ─────────────────────────────────────────────────────────────────────────
+  - destination: 10.20.30.0/24
+    port: 9092
+    protocol: tcp
+    description: "Kafka brokers subnet"
+
+  - destination: 172.16.0.5
+    port: 5432
+    protocol: tcp
+    description: "PostgreSQL database"

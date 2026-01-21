@@ -1,0 +1,168 @@
+# kubernetes/deployment.yaml
+# Kubernetes deployment with Envoy egress sidecar
+#
+# Usage:
+#   kubectl apply -f kubernetes/
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-egress-config
+  labels:
+    app: egress-proxy
+data:
+  envoy.yaml: |
+    # Paste the generated envoy.yaml content here
+    # Or mount from a separate ConfigMap
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: egress-allowlist
+  labels:
+    app: egress-proxy
+data:
+  egress-allowlist.yaml: |
+    egress:
+      - destination: api.github.com
+        port: 443
+        protocol: http
+        description: "GitHub API"
+
+      - destination: 10.20.30.0/24
+        port: 9092
+        protocol: tcp
+        description: "Kafka brokers"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  labels:
+    app: my-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+      annotations:
+        # Trigger rolling update when config changes
+        checksum/envoy-config: "{{ sha256sum .Values.envoyConfig }}"
+    spec:
+      # Init container to setup iptables for transparent proxy
+      initContainers:
+        - name: init-iptables
+          image: alpine:3.19
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+            runAsUser: 0
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              apk add --no-cache iptables
+
+              # Create custom chain for egress redirection
+              iptables -t nat -N ENVOY_EGRESS || true
+
+              # Skip traffic from Envoy itself (UID 1337)
+              iptables -t nat -A ENVOY_EGRESS -m owner --uid-owner 1337 -j RETURN
+
+              # Skip localhost
+              iptables -t nat -A ENVOY_EGRESS -d 127.0.0.0/8 -j RETURN
+
+              # Skip traffic to Envoy ports
+              iptables -t nat -A ENVOY_EGRESS -p tcp --dport 15000 -j RETURN
+              iptables -t nat -A ENVOY_EGRESS -p tcp --dport 15001 -j RETURN
+              iptables -t nat -A ENVOY_EGRESS -p tcp --dport 9901 -j RETURN
+
+              # Skip Kubernetes internal traffic (optional, adjust as needed)
+              iptables -t nat -A ENVOY_EGRESS -d 10.96.0.0/12 -j RETURN
+
+              # Redirect all other TCP traffic to Envoy transparent proxy
+              iptables -t nat -A ENVOY_EGRESS -p tcp -j REDIRECT --to-ports 15001
+
+              # Apply to OUTPUT chain
+              iptables -t nat -A OUTPUT -p tcp -j ENVOY_EGRESS
+
+              echo "iptables rules configured for egress redirection"
+              iptables -t nat -L ENVOY_EGRESS -n -v
+
+      containers:
+        # Application container
+        - name: app
+          image: my-app:latest
+          env:
+            # HTTP proxy for applications that support it
+            - name: HTTP_PROXY
+              value: "http://127.0.0.1:15000"
+            - name: HTTPS_PROXY
+              value: "http://127.0.0.1:15000"
+            - name: http_proxy
+              value: "http://127.0.0.1:15000"
+            - name: https_proxy
+              value: "http://127.0.0.1:15000"
+            - name: NO_PROXY
+              value: "localhost,127.0.0.1,10.96.0.0/12"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+        # Envoy sidecar
+        - name: envoy
+          image: envoyproxy/envoy:v1.29.0
+          args:
+            - "-c"
+            - "/etc/envoy/envoy.yaml"
+            - "--log-level"
+            - "info"
+          securityContext:
+            runAsUser: 1337
+            runAsGroup: 1337
+          ports:
+            - containerPort: 15000
+              name: http-proxy
+            - containerPort: 15001
+              name: tcp-proxy
+            - containerPort: 9901
+              name: admin
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 9901
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /server_info
+              port: 9901
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: envoy-egress-config

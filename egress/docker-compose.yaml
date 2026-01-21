@@ -1,0 +1,41 @@
+# docker-compose.yaml
+# Test environment for Envoy egress proxy
+#
+# Usage:
+#   docker-compose up -d
+#   docker-compose exec client sh
+#   # Inside client: curl https://api.github.com/zen
+
+version: '3.8'
+
+services:
+  # Envoy proxy
+  envoy:
+    image: envoyproxy/envoy:v1.29.0
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    ports:
+      - "15000:15000"   # HTTP proxy
+      - "15001:15001"   # Transparent proxy (requires iptables setup)
+      - "9901:9901"     # Admin interface
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+    networks:
+      - egress-test
+
+  # Test client with proxy configured
+  client:
+    image: curlimages/curl:latest
+    entrypoint: ["sleep", "infinity"]
+    environment:
+      - HTTP_PROXY=http://envoy:15000
+      - HTTPS_PROXY=http://envoy:15000
+      - http_proxy=http://envoy:15000
+      - https_proxy=http://envoy:15000
+    networks:
+      - egress-test
+    depends_on:
+      - envoy
+
+networks:
+  egress-test:
+    driver: bridge

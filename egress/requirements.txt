@@ -1,0 +1,5 @@
+# requirements.txt
+# Python dependencies for Envoy config generator
+
+PyYAML>=6.0
+Jinja2>=3.1.0
