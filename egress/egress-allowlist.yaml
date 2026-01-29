@@ -1,59 +1,187 @@
 # egress-allowlist.yaml
-# 
+#
 # Egress Allowlist Configuration
 # This file is version-controlled and requires PR approval for changes.
 #
 # Format:
-#   - destination: hostname or IP/CIDR
-#     port: port number
+#   - destination/destinations: hostname or IP/CIDR (can be a list for TCP)
+#     port/port_range: port number or range (start/end)
 #     protocol: http | tcp
+#     envs: [dev, stg, prd] - which environments this rule applies to
 #     description: optional description
 #
 # Rules:
 #   - protocol: http  → Uses HTTP_PROXY, matched by hostname
 #   - protocol: tcp   → Matched by IP (hostnames resolved at deploy time)
+#                       Supports port_range (start/end) and multiple destinations
+#   - envs: List of environments where this rule applies. If omitted, applies to ALL environments.
 
 egress:
   # ─────────────────────────────────────────────────────────────────────────
   # HTTP/HTTPS destinations (matched by hostname via HTTP_PROXY)
   # ─────────────────────────────────────────────────────────────────────────
-  - destination: api.github.com
+
+  # GitHub - allowed in all environments (multiple domains)
+  - domains:
+      - api.github.com
+      - raw.githubusercontent.com
+      - gist.githubusercontent.com
     port: 443
     protocol: http
-    description: "GitHub API"
+    envs: [dev, stg, prd]
+    description: "GitHub APIs"
 
-  - destination: raw.githubusercontent.com
-    port: 443
-    protocol: http
-    description: "GitHub raw content"
+  # GitHub - wildcard example (use with caution)
+  # - domains:
+  #     - "*.github.com"
+  #   port: 443
+  #   protocol: http
+  #   envs: [dev]
+  #   description: "All GitHub subdomains - DEV only"
 
-  - destination: internal-api.corp.local
+  # Internal API - dev/stg only (single domain format still supported)
+  - destination: internal-api-dev.corp.local
     port: 80
     protocol: http
-    description: "Internal REST API"
+    envs: [dev]
+    description: "Internal REST API - DEV"
+
+  - destination: internal-api-stg.corp.local
+    port: 80
+    protocol: http
+    envs: [stg]
+    description: "Internal REST API - STG"
+
+  # Internal API - PRD (multiple domains)
+  - domains:
+      - internal-api.corp.local
+      - internal-api-legacy.corp.local
+      - api.corp.local
+    port: 80
+    protocol: http
+    envs: [prd]
+    description: "Internal REST API - PRD (multiple endpoints)"
+
+  # External partner API - stg and prd only
+  - destination: partner-api-staging.external.com
+    port: 443
+    protocol: http
+    envs: [stg]
+    description: "Partner API - Staging"
+
+  - destination: partner-api.external.com
+    port: 443
+    protocol: http
+    envs: [prd]
+    description: "Partner API - Production"
+
+  # Monitoring services - all environments (wildcard example)
+  - domains:
+      - "*.monitoring.internal"
+    port: 443
+    protocol: http
+    envs: [dev, stg, prd]
+    description: "All monitoring subdomains (Grafana, Prometheus, etc)"
 
   # ─────────────────────────────────────────────────────────────────────────
   # TCP destinations with hostnames (resolved to IP at deploy time)
   # ─────────────────────────────────────────────────────────────────────────
-  - destination: internal-redis.net.intra
-    port: 30672
-    protocol: tcp
-    description: "Redis cache"
 
-  - destination: kafka.internal.corp
+  # Redis cluster - DEV environment
+  - destinations:
+      - redis-dev-1.internal
+      - redis-dev-2.internal
+      - 10.50.100.10
+    port_range:
+      start: 30000
+      end: 30999
+    protocol: tcp
+    envs: [dev]
+    description: "Redis cluster - DEV"
+
+  # Redis cluster - STG environment
+  - destinations:
+      - redis-stg-1.internal
+      - redis-stg-2.internal
+      - 10.50.200.10
+    port_range:
+      start: 30000
+      end: 30999
+    protocol: tcp
+    envs: [stg]
+    description: "Redis cluster - STG"
+
+  # Redis cluster - PRD environment (HA setup with more nodes)
+  - destinations:
+      - redis-prd-master.internal
+      - redis-prd-replica-1.internal
+      - redis-prd-replica-2.internal
+      - 10.50.250.25
+      - 10.50.250.26
+      - 10.50.250.27
+    port_range:
+      start: 30000
+      end: 30999
+    protocol: tcp
+    envs: [prd]
+    description: "Redis cluster - PRD (HA)"
+
+  # Kafka - shared STG/PRD
+  - destination: kafka-stg.internal.corp
     port: 9093
     protocol: tcp
-    description: "Kafka cluster"
+    envs: [stg]
+    description: "Kafka cluster - STG"
+
+  - destinations:
+      - kafka-prd-1.internal.corp
+      - kafka-prd-2.internal.corp
+      - kafka-prd-3.internal.corp
+    port: 9093
+    protocol: tcp
+    envs: [prd]
+    description: "Kafka cluster - PRD"
+
+  # Development-only database access
+  - destination: postgres-dev.db.internal
+    port: 5432
+    protocol: tcp
+    envs: [dev]
+    description: "PostgreSQL - DEV (direct access allowed)"
+
+  # Monitoring/Observability - all environments
+  - destination: prometheus.monitoring.internal
+    port: 9090
+    protocol: tcp
+    envs: [dev, stg, prd]
+    description: "Prometheus metrics endpoint"
+
+  - destination: jaeger-collector.tracing.internal
+    port: 14250
+    protocol: tcp
+    envs: [dev, stg, prd]
+    description: "Jaeger tracing collector"
 
   # ─────────────────────────────────────────────────────────────────────────
   # TCP destinations with IP/CIDR (used directly)
   # ─────────────────────────────────────────────────────────────────────────
+
+  # Kafka brokers subnet - PRD only
   - destination: 10.20.30.0/24
     port: 9092
     protocol: tcp
-    description: "Kafka brokers subnet"
+    envs: [prd]
+    description: "Kafka brokers subnet - PRD"
 
-  - destination: 172.16.0.5
+  # PostgreSQL - STG and PRD
+  - destination: 172.16.10.5
     port: 5432
     protocol: tcp
-    description: "PostgreSQL database"
+    envs: [stg]
+    description: "PostgreSQL database - STG"
+
+  - destination: 172.16.20.5
+    port: 5432
+    protocol: tcp
+    envs: [prd]
+    description: "PostgreSQL database - PRD"

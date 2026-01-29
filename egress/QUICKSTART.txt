@@ -1,0 +1,302 @@
+================================================================================
+EGRESS CONFIGURATION QUICKSTART
+================================================================================
+
+OVERVIEW
+--------
+Single allowlist file (egress-allowlist.yaml) with environment tags
+Generate separate configs for DEV, STG, PRD
+
+QUICK COMMANDS
+--------------
+
+# Generate config for specific environment
+python generate-envoy-config.py --env dev
+python generate-envoy-config.py --env stg
+python generate-envoy-config.py --env prd
+
+# Generate all environments at once
+./generate-all-envs.sh
+
+# With validation
+./generate-all-envs.sh --validate
+
+# Check IPs behind hostname
+python resolve-hostnames.py kafka.internal.corp
+
+# Check all hostnames in allowlist
+python resolve-hostnames.py --file egress-allowlist.yaml
+
+
+ALLOWLIST FORMAT
+----------------
+
+HTTP Rule (single domain):
+  - destination: api.github.com
+    port: 443
+    protocol: http
+    envs: [dev, stg, prd]
+    description: "GitHub API"
+
+HTTP Rule (multiple domains):
+  - domains:
+      - api.github.com
+      - api-v2.github.com
+      - raw.githubusercontent.com
+    port: 443
+    protocol: http
+    envs: [dev, stg, prd]
+    description: "GitHub APIs"
+
+HTTP Rule (wildcard domain):
+  - domains:
+      - "*.monitoring.internal"
+    port: 443
+    protocol: http
+    envs: [dev, stg, prd]
+    description: "All monitoring services"
+
+HTTP Rule (environment-specific):
+  - destination: api-dev.corp.local
+    port: 80
+    protocol: http
+    envs: [dev]
+    description: "Internal API - DEV"
+
+TCP Rule (single port):
+  - destination: postgres.db.internal
+    port: 5432
+    protocol: tcp
+    envs: [prd]
+    description: "PostgreSQL - PRD"
+
+TCP Rule (port range + multiple IPs):
+  - destinations:
+      - redis-master.internal
+      - redis-replica.internal
+      - 10.50.100.25
+    port_range:
+      start: 30000
+      end: 30999
+    protocol: tcp
+    envs: [prd]
+    description: "Redis cluster - PRD"
+
+
+WORKFLOW
+--------
+
+1. Edit egress-allowlist.yaml
+   - Add rule with environment tags: envs: [dev, stg, prd]
+
+2. Generate config for target environment
+   python generate-envoy-config.py --env dev -o envoy-dev.yaml
+
+3. Deploy
+   kubectl apply -f envoy-dev.yaml -n dev
+
+4. Monitor
+   kubectl logs -f deployment/envoy-proxy -n dev
+
+
+ENVIRONMENT TAGS
+----------------
+
+envs: [dev]           # DEV only
+envs: [stg]           # STG only
+envs: [prd]           # PRD only
+envs: [dev, stg]      # DEV and STG
+envs: [dev, stg, prd] # All environments
+(no envs field)       # All environments (default)
+
+
+COMMON PATTERNS
+---------------
+
+# Shared service across all envs (single domain)
+- destination: api.github.com
+  port: 443
+  protocol: http
+  envs: [dev, stg, prd]
+
+# Multiple related domains
+- domains:
+    - api.github.com
+    - raw.githubusercontent.com
+    - gist.githubusercontent.com
+  port: 443
+  protocol: http
+  envs: [dev, stg, prd]
+
+# Wildcard for dev testing
+- domains:
+    - "*.dev.internal"
+  port: 443
+  protocol: http
+  envs: [dev]
+
+# Different endpoints per env
+- destination: db-dev.internal
+  port: 5432
+  protocol: tcp
+  envs: [dev]
+
+- destination: db-stg.internal
+  port: 5432
+  protocol: tcp
+  envs: [stg]
+
+- destination: db-prd.internal
+  port: 5432
+  protocol: tcp
+  envs: [prd]
+
+# PRD with HA (multiple IPs)
+- destinations:
+    - service-1.prd.internal
+    - service-2.prd.internal
+    - 10.20.30.40
+  port: 9093
+  protocol: tcp
+  envs: [prd]
+
+
+HOSTNAME RESOLUTION
+-------------------
+
+# Find IPs behind a hostname
+python resolve-hostnames.py kafka.internal.corp
+
+# Output shows all resolved IPs with YAML snippet:
+#   - address_prefix: "10.20.30.40"
+#     prefix_len: 32
+#   - address_prefix: "10.20.30.41"
+#     prefix_len: 32
+
+# Then use in allowlist:
+- destinations:
+    - kafka.internal.corp  # Will resolve during generation
+    - 10.20.30.40          # Or use IPs directly
+  port: 9092
+  protocol: tcp
+  envs: [prd]
+
+
+GENERATED FILES
+---------------
+
+envoy-dev.yaml  # DEV environment config
+envoy-stg.yaml  # STG environment config
+envoy-prd.yaml  # PRD environment config
+
+
+TROUBLESHOOTING
+---------------
+
+Rule not appearing in generated config?
+  → Check envs tag includes your target environment
+
+Hostname resolution fails?
+  → Run: python resolve-hostnames.py <hostname>
+  → Use static IP as fallback
+
+Config too large?
+  → Use CIDR ranges instead of individual IPs
+  → Example: 10.0.1.0/24 instead of 256 IPs
+
+Different IPs per environment?
+  → Create separate rules with env-specific tags
+
+
+FILES
+-----
+
+egress-allowlist.yaml      - Source of truth (edit this)
+envoy.yaml.j2              - Template (rarely edit)
+generate-envoy-config.py   - Generation script
+generate-all-envs.sh       - Batch generator
+resolve-hostnames.py       - DNS utility
+README-ENV.md              - Full documentation
+EXAMPLE-COMPARISON.md      - Side-by-side examples
+
+
+EXAMPLES
+--------
+
+# Example 1: Multiple GitHub domains
+- domains:
+    - api.github.com
+    - raw.githubusercontent.com
+    - gist.githubusercontent.com
+  port: 443
+  protocol: http
+  envs: [dev, stg, prd]
+  description: "GitHub APIs"
+
+# Example 2: Redis cluster with port range (PRD only)
+- destinations:
+    - redis-prd-1.internal
+    - redis-prd-2.internal
+    - 10.50.250.25
+  port_range:
+    start: 30000
+    end: 30999
+  protocol: tcp
+  envs: [prd]
+  description: "Redis cluster - PRD with NodePort range"
+
+# Example 3: Wildcard for monitoring services
+- domains:
+    - "*.monitoring.internal"
+  port: 443
+  protocol: http
+  envs: [dev, stg, prd]
+  description: "All monitoring subdomains"
+
+# Example 4: Dev-only wildcard for flexibility
+- domains:
+    - "*.dev.internal"
+  port: 443
+  protocol: http
+  envs: [dev]
+  description: "All dev services - flexible testing"
+
+
+DEPLOYMENT
+----------
+
+# DEV (automatic)
+./generate-all-envs.sh
+kubectl apply -f envoy-dev.yaml -n dev
+
+# STG (review)
+./generate-all-envs.sh
+kubectl apply -f envoy-stg.yaml -n stg
+
+# PRD (PR required)
+./generate-all-envs.sh --validate
+git add egress-allowlist.yaml envoy-prd.yaml
+git commit -m "Add egress rule for XYZ service"
+git push
+# Create PR → Review → Approve → Merge → Deploy
+
+
+LOGS & MONITORING
+-----------------
+
+# View logs with environment tag
+kubectl logs -f deployment/envoy-proxy -n prd | jq '.'
+
+# Filter by decision
+kubectl logs deployment/envoy-proxy -n prd | jq 'select(.decision=="DENIED")'
+
+# Check specific environment
+kubectl logs deployment/envoy-proxy -n prd | jq 'select(.environment=="prd")'
+
+
+================================================================================
+For more details: README-ENV.md
+For port ranges: PORT-RANGE-GUIDE.md
+For HTTP domains: HTTP-DOMAINS-EXAMPLES.md
+For comparisons: EXAMPLE-COMPARISON.md
+================================================================================

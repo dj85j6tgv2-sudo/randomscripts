@@ -1,6 +1,6 @@
 {# envoy.yaml.j2 #}
 {# Envoy Egress Control Plane Configuration Template #}
-{# Generated from egress-allowlist.yaml #}
+{# Generated from egress-allowlist.yaml for environment: {{ target_env | upper }} #}
 
 admin:
   address:
@@ -13,6 +13,7 @@ static_resources:
     # =========================================================================
     # HTTP PROXY LISTENER (:15000)
     # Handles HTTP/HTTPS via HTTP_PROXY environment variable
+    # Environment: {{ target_env | upper }}
     # =========================================================================
     - name: http_proxy
       address:
@@ -40,6 +41,7 @@ static_resources:
                         json_format:
                           timestamp: "%START_TIME%"
                           listener: "http_proxy"
+                          environment: "{{ target_env }}"
                           method: "%REQ(:METHOD)%"
                           destination: "%REQ(:AUTHORITY)%"
                           response_code: "%RESPONSE_CODE%"
@@ -52,14 +54,20 @@ static_resources:
                   name: proxy_routes
                   virtual_hosts:
                     # ─────────────────────────────────────────
-                    # ALLOWED HTTP/HTTPS DESTINATIONS
+                    # ALLOWED HTTP/HTTPS DESTINATIONS ({{ target_env | upper }})
                     # ─────────────────────────────────────────
 {% for rule in http_rules %}
-                    # {{ rule.description | default(rule.destination) }}
-                    - name: "{{ rule.destination | replace('.', '_') | replace('-', '_') }}_{{ rule.port }}"
+                    # {{ rule.description | default('HTTP rule') }} [envs: {{ rule.envs | join(', ') }}]
+                    - name: "{{ rule.name }}"
                       domains:
-                        - "{{ rule.destination }}"
-                        - "{{ rule.destination }}:{{ rule.port }}"
+{% for domain in rule.domains %}
+{% if '*' in domain %}
+                        - "{{ domain }}"
+{% else %}
+                        - "{{ domain }}"
+                        - "{{ domain }}:{{ rule.port }}"
+{% endif %}
+{% endfor %}
                       routes:
                         - match:
                             connect_matcher: {}
@@ -85,7 +93,7 @@ static_resources:
                           direct_response:
                             status: 403
                             body:
-                              inline_string: '{"error":"egress_denied","listener":"http_proxy"}'
+                              inline_string: '{"error":"egress_denied","listener":"http_proxy","environment":"{{ target_env }}"}'
                           response_headers_to_add:
                             - header:
                                 key: content-type
@@ -95,7 +103,7 @@ static_resources:
                           direct_response:
                             status: 403
                             body:
-                              inline_string: '{"error":"egress_denied","listener":"http_proxy"}'
+                              inline_string: '{"error":"egress_denied","listener":"http_proxy","environment":"{{ target_env }}"}'
                           response_headers_to_add:
                             - header:
                                 key: content-type
@@ -115,6 +123,7 @@ static_resources:
     # =========================================================================
     # TRANSPARENT TCP PROXY LISTENER (:15001)
     # Handles TCP traffic intercepted by iptables
+    # Environment: {{ target_env | upper }}
     # =========================================================================
     - name: transparent_tcp
       address:
@@ -132,18 +141,24 @@ static_resources:
 
       filter_chains:
         # ─────────────────────────────────────────
-        # ALLOWED TCP DESTINATIONS
+        # ALLOWED TCP DESTINATIONS ({{ target_env | upper }})
         # ─────────────────────────────────────────
 {% for rule in tcp_rules %}
-        # {{ rule.description | default(rule.original_destination) }}
-        # Original: {{ rule.original_destination }}
-        - filter_chain_match:
+        # {{ rule.description | default('TCP rule') }} [envs: {{ rule.envs | join(', ') }}]
+        - name: "{{ rule.name }}"
+          filter_chain_match:
+{% if rule.port_range %}
+            destination_port_range:
+              start: {{ rule.port_range.start }}
+              end: {{ rule.port_range.end }}
+{% else %}
+            destination_port: {{ rule.port }}
+{% endif %}
             prefix_ranges:
-              - address_prefix: "{{ rule.ip_address }}"
-                prefix_len: {{ rule.prefix_len }}
-            destination_port_ranges:
-              - start: {{ rule.port }}
-                end: {{ rule.port + 1 }}
+{% for ip in rule.ip_addresses %}
+              - address_prefix: "{{ ip.address }}"
+                prefix_len: {{ ip.prefix_len }}
+{% endfor %}
           filters:
             - name: envoy.filters.network.tcp_proxy
               typed_config:
@@ -159,8 +174,9 @@ static_resources:
                         json_format:
                           timestamp: "%START_TIME%"
                           listener: "transparent_tcp"
+                          environment: "{{ target_env }}"
                           decision: "ALLOWED"
-                          rule: "{{ rule.original_destination }}:{{ rule.port }}"
+                          rule: "{{ rule.description | default('TCP rule') }}"
                           destination: "%UPSTREAM_HOST%"
                           bytes_rx: "%BYTES_RECEIVED%"
                           bytes_tx: "%BYTES_SENT%"
@@ -185,6 +201,7 @@ static_resources:
                         json_format:
                           timestamp: "%START_TIME%"
                           listener: "transparent_tcp"
+                          environment: "{{ target_env }}"
                           decision: "DENIED"
                           destination: "%UPSTREAM_HOST%"
                           sni: "%REQUESTED_SERVER_NAME%"
@@ -213,4 +230,10 @@ static_resources:
       connect_timeout: 1s
       load_assignment:
         cluster_name: blackhole
-        endpoints: []
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 9901

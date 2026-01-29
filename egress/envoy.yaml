@@ -61,29 +61,15 @@ static_resources:
                     # ALLOWED HTTP/HTTPS DESTINATIONS
                     # ─────────────────────────────────────────
 
-                    # GitHub API
+                    # GitHub APIs (multiple domains in one rule)
                     - name: api_github_com_443
                       domains:
                         - "api.github.com"
                         - "api.github.com:443"
-                      routes:
-                        - match:
-                            connect_matcher: {}
-                          route:
-                            cluster: dynamic_forward_proxy
-                            upgrade_configs:
-                              - upgrade_type: CONNECT
-                                connect_config: {}
-                        - match:
-                            prefix: "/"
-                          route:
-                            cluster: dynamic_forward_proxy
-
-                    # GitHub raw content
-                    - name: raw_githubusercontent_com_443
-                      domains:
                         - "raw.githubusercontent.com"
                         - "raw.githubusercontent.com:443"
+                        - "gist.githubusercontent.com"
+                        - "gist.githubusercontent.com:443"
                       routes:
                         - match:
                             connect_matcher: {}
@@ -97,11 +83,32 @@ static_resources:
                           route:
                             cluster: dynamic_forward_proxy
 
-                    # Internal REST API
+                    # Monitoring services (wildcard domain)
+                    - name: monitoring_internal_443
+                      domains:
+                        - "*.monitoring.internal"
+                      routes:
+                        - match:
+                            connect_matcher: {}
+                          route:
+                            cluster: dynamic_forward_proxy
+                            upgrade_configs:
+                              - upgrade_type: CONNECT
+                                connect_config: {}
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: dynamic_forward_proxy
+
+                    # Internal REST API (multiple endpoints for PRD)
                     - name: internal_api_corp_local_80
                       domains:
                         - "internal-api.corp.local"
                         - "internal-api.corp.local:80"
+                        - "internal-api-legacy.corp.local"
+                        - "internal-api-legacy.corp.local:80"
+                        - "api.corp.local"
+                        - "api.corp.local:80"
                       routes:
                         - match:
                             connect_matcher: {}
@@ -156,103 +163,54 @@ static_resources:
     # =========================================================================
     # TRANSPARENT TCP PROXY LISTENER (:15001)
     # Handles TCP traffic intercepted by iptables
+    # Uses filter_chain_match with prefix_ranges for O(1) destination IP+port matching
     # =========================================================================
-    - name: transparent_tcp
+    - name: listener_tcp
       address:
         socket_address:
           address: 0.0.0.0
           port_value: 15001
       access_log:
-        # Logs ONLY denied connections (UAEX flag = RBAC Denied)
         - name: envoy.access_loggers.file
-          filter:
-            response_flag_filter:
-              flags: ["UAEX"]
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
-            path: /denied.log
+            path: /app/envoy/logs/all_tcp.log
             log_format:
               json_format:
                 timestamp: "%START_TIME%"
-                decision: "DENIED"
-                original_dst: "%DOWNSTREAM_LOCAL_ADDRESS%"
-                source: "%DOWNSTREAM_REMOTE_ADDRESS%"
-                flag: "%RESPONSE_FLAGS%"
-
-        # Logs ONLY allowed connections (No UAEX flag)
-        - name: envoy.access_loggers.file
-          filter:
-            not_filter:
-              response_flag_filter:
-                flags: ["UAEX"]
-          typed_config:
-            "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
-            path: /access.log
-            log_format:
-              json_format:
-                timestamp: "%START_TIME%"
-                decision: "ALLOWED"
-                original_dst: "%DOWNSTREAM_LOCAL_ADDRESS%"
+                destination: "%DOWNSTREAM_LOCAL_ADDRESS%"
                 source: "%DOWNSTREAM_REMOTE_ADDRESS%"
                 upstream: "%UPSTREAM_HOST%"
-                bytes_rx: "%BYTES_RECEIVED%"
-                bytes_tx: "%BYTES_SENT%"
-                duration_ms: "%DURATION%"
-
-        # Catch-all debug log
-        - name: envoy.access_loggers.file
-          typed_config:
-            "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
-            path: /all_tcp.log
-            log_format:
-              json_format:
-                timestamp: "%START_TIME%"
-                dst: "%DOWNSTREAM_LOCAL_ADDRESS%"
-                src: "%DOWNSTREAM_REMOTE_ADDRESS%"
-                flag: "%RESPONSE_FLAGS%"
+                response_flags: "%RESPONSE_FLAGS%"
       listener_filters:
+        # Capture original destination IP:port from iptables REDIRECT/TPROXY
         - name: envoy.filters.listener.original_dst
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.listener.original_dst.v3.OriginalDst
 
       filter_chains:
-        - filters:
-            # RBAC decides based on your policies
-            - name: envoy.filters.network.rbac
-              typed_config:
-                "@type": type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC
-                stat_prefix: tcp_rbac
-                rules:
-                  action: ALLOW
-                  policies:
-                    redis_cache:
-                      permissions:
-                        - and_rules:
-                            rules:
-                              - destination_ip:
-                                  {
-                                    address_prefix: "10.50.100.25",
-                                    prefix_len: 32,
-                                  }
-                              - destination_port: 30672
-                      principals: [{ any: true }]
-                    kafka_brokers:
-                      permissions:
-                        - and_rules:
-                            rules:
-                              - destination_ip:
-                                  {
-                                    address_prefix: "10.20.30.0",
-                                    prefix_len: 24,
-                                  }
-                              - destination_port: 9092
-                      principals: [{ any: true }]
-
-            # Forwarding (only happens if RBAC matches a policy)
+        # ─────────────────────────────────────────
+        # Chain 1: Allow Redis cluster with port range 30000-30999
+        # Resolved IPs: internal-redis.net.intra, 10.50.100.26, 10.50.100.27
+        # ─────────────────────────────────────────
+        - name: "allow_redis_cluster_30000_30999"
+          filter_chain_match:
+            destination_port_range:
+              start: 30000
+              end: 30999
+            # prefix_ranges matches DESTINATION IP in transparent mode
+            prefix_ranges:
+              - address_prefix: "10.50.100.25"
+                prefix_len: 32
+              - address_prefix: "10.50.100.26"
+                prefix_len: 32
+              - address_prefix: "10.50.100.27"
+                prefix_len: 32
+          filters:
             - name: envoy.filters.network.tcp_proxy
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
-                stat_prefix: tcp_egress
+                stat_prefix: tcp_redis
                 cluster: original_dst
                 access_log:
                   - name: envoy.access_loggers.file
@@ -262,13 +220,84 @@ static_resources:
                       log_format:
                         json_format:
                           timestamp: "%START_TIME%"
-                          decision: "%DYNAMIC_METADATA(envoy.filters.network.rbac:allowed)%"
+                          decision: "ALLOWED"
+                          rule: "redis_cluster_30000_30999"
                           destination: "%DOWNSTREAM_LOCAL_ADDRESS%"
                           source: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                          upstream: "%UPSTREAM_HOST%"
                           response_flags: "%RESPONSE_FLAGS%"
                           bytes_rx: "%BYTES_RECEIVED%"
                           bytes_tx: "%BYTES_SENT%"
                           duration_ms: "%DURATION%"
+
+        # ─────────────────────────────────────────
+        # Chain 2: Allow Kafka 10.20.30.40:9093
+        # ─────────────────────────────────────────
+        - name: "allow_kafka_10_20_30_40_9093"
+          filter_chain_match:
+            destination_port: 9093
+            prefix_ranges:
+              - address_prefix: "10.20.30.40"
+                prefix_len: 32
+          filters:
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: tcp_kafka
+                cluster: original_dst
+                access_log:
+                  - name: envoy.access_loggers.file
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                      path: /dev/stdout
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          decision: "ALLOWED"
+                          rule: "kafka_cluster"
+                          destination: "%DOWNSTREAM_LOCAL_ADDRESS%"
+                          source: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                          upstream: "%UPSTREAM_HOST%"
+                          response_flags: "%RESPONSE_FLAGS%"
+                          bytes_rx: "%BYTES_RECEIVED%"
+                          bytes_tx: "%BYTES_SENT%"
+                          duration_ms: "%DURATION%"
+
+        # ─────────────────────────────────────────
+        # Chain 3: Default DENY (catch-all)
+        # ─────────────────────────────────────────
+        - name: "default_deny_all"
+          filters:
+            - name: envoy.filters.network.rbac
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC
+                stat_prefix: rbac_deny_all
+                rules:
+                  action: DENY
+                  policies:
+                    "deny-all-egress":
+                      permissions:
+                        - any: true
+                      principals:
+                        - any: true
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: tcp_denied
+                cluster: blackhole
+                access_log:
+                  - name: envoy.access_loggers.file
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                      path: /dev/stdout
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          decision: "DENIED"
+                          rule: "default_deny"
+                          destination: "%DOWNSTREAM_LOCAL_ADDRESS%"
+                          source: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                          response_flags: "%RESPONSE_FLAGS%"
 
   clusters:
     # Dynamic forward proxy for HTTP/HTTPS

@@ -1,14 +1,133 @@
 # Envoy Egress Control Plane
 
-A simple, deny-by-default egress control solution using Envoy proxy.
+A simple, deny-by-default egress control solution using Envoy proxy with environment-based configuration (DEV/STG/PRD).
 
 ## Overview
 
 This solution provides:
 - **Deny by default**: All outbound traffic is blocked unless explicitly allowed
+- **Environment filtering**: Separate configs for DEV, STG, and PRD from single source
 - **Simple allowlist**: Users declare destinations in a simple YAML format
+- **HTTP multi-domain**: Support for multiple domains and wildcards per rule
+- **TCP port ranges**: Support for port ranges and multiple IPs per rule
 - **Automatic DNS resolution**: Hostnames are resolved to IPs at deploy time for TCP rules
-- **Comprehensive logging**: JSON logs with ALLOWED/DENIED decisions
+- **Comprehensive logging**: JSON logs with ALLOWED/DENIED decisions and environment tags
+
+## Quick Start
+
+```bash
+# Generate config for specific environment
+python generate-envoy-config.py --env dev
+python generate-envoy-config.py --env stg
+python generate-envoy-config.py --env prd
+
+# Or generate all at once
+./generate-all-envs.sh
+
+# Check IPs behind a hostname
+python resolve-hostnames.py kafka.internal.corp
+
+# Check all hostnames in allowlist
+python resolve-hostnames.py --file egress-allowlist.yaml
+```
+
+## File Structure
+
+### Core Files (Edit These)
+- **`egress-allowlist.yaml`** - Source of truth for egress rules
+  - Single file with environment tags: `envs: [dev, stg, prd]`
+  - Supports HTTP (single/multiple domains, wildcards)
+  - Supports TCP (single/multiple destinations, port ranges)
+
+### Scripts
+- **`generate-envoy-config.py`** - Generate environment-specific Envoy configs
+- **`generate-all-envs.sh`** - Batch generate all environments
+- **`resolve-hostnames.py`** - DNS resolution utility for load balancers
+
+### Templates & Examples
+- **`envoy.yaml.j2`** - Jinja2 template for Envoy configuration
+- **`envoy.yaml`** - Working example (generated output)
+- **`COMPLETE-EXAMPLE.yaml`** - Comprehensive example showing all features
+
+### Deployment
+- **`deployment.yaml`** - Kubernetes deployment manifest
+- **`docker-compose.yaml`** - Docker Compose for local testing
+- **`test-egress.sh`** - Testing script
+- **`requirements.txt`** - Python dependencies
+
+### Documentation
+- **`README.md`** (this file) - Main overview
+- **`QUICKSTART.txt`** - Quick reference card
+- **`README-ENV.md`** - Environment-based configuration guide (comprehensive)
+- **`HTTP-DOMAINS-EXAMPLES.md`** - HTTP multi-domain & wildcard examples
+- **`PORT-RANGE-GUIDE.md`** - TCP port ranges & multiple IPs guide
+- **`EXAMPLE-COMPARISON.md`** - Side-by-side environment comparison
+
+## Features
+
+### HTTP/HTTPS Rules
+
+#### Single Domain
+```yaml
+- destination: api.github.com
+  port: 443
+  protocol: http
+  envs: [dev, stg, prd]
+```
+
+#### Multiple Domains
+```yaml
+- domains:
+    - api.github.com
+    - api-v2.github.com
+    - raw.githubusercontent.com
+  port: 443
+  protocol: http
+  envs: [dev, stg, prd]
+```
+
+#### Wildcard Domains
+```yaml
+- domains:
+    - "*.monitoring.internal"
+  port: 443
+  protocol: http
+  envs: [dev, stg, prd]
+```
+
+### TCP Rules
+
+#### Single Port
+```yaml
+- destination: postgres.db.internal
+  port: 5432
+  protocol: tcp
+  envs: [prd]
+```
+
+#### Port Range with Multiple Destinations
+```yaml
+- destinations:
+    - redis-master.internal
+    - redis-replica.internal
+    - 10.50.100.25
+  port_range:
+    start: 30000
+    end: 30999
+  protocol: tcp
+  envs: [prd]
+```
+
+### Environment Filtering
+
+Rules can target specific environments:
+```yaml
+envs: [dev]           # DEV only
+envs: [stg]           # STG only
+envs: [prd]           # PRD only
+envs: [dev, stg]      # DEV and STG
+envs: [dev, stg, prd] # All environments
+```
 
 ## Architecture
 

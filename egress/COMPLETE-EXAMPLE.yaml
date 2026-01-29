@@ -1,0 +1,204 @@
+# Complete Example: egress-allowlist.yaml
+# Demonstrates all features:
+#   - Environment filtering (dev/stg/prd)
+#   - HTTP: single domain, multiple domains, wildcards
+#   - TCP: single port, port ranges, multiple destinations
+
+egress:
+  # ==========================================================================
+  # HTTP/HTTPS RULES
+  # ==========================================================================
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 1. Single domain - all environments (backward compatible format)
+  # ──────────────────────────────────────────────────────────────────────
+  - destination: api.example.com
+    port: 443
+    protocol: http
+    envs: [dev, stg, prd]
+    description: "Example API - single domain"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 2. Multiple domains - all environments
+  # ──────────────────────────────────────────────────────────────────────
+  - domains:
+      - api.github.com
+      - raw.githubusercontent.com
+      - gist.githubusercontent.com
+    port: 443
+    protocol: http
+    envs: [dev, stg, prd]
+    description: "GitHub APIs - multiple domains"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 3. Wildcard domain - all environments
+  # ──────────────────────────────────────────────────────────────────────
+  - domains:
+      - "*.monitoring.internal"
+    port: 443
+    protocol: http
+    envs: [dev, stg, prd]
+    description: "Monitoring services - Grafana, Prometheus, etc"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 4. Environment-specific HTTP rules
+  # ──────────────────────────────────────────────────────────────────────
+  
+  # DEV - wildcard for flexibility
+  - domains:
+      - "*.dev.internal"
+    port: 443
+    protocol: http
+    envs: [dev]
+    description: "All dev services - flexible testing"
+
+  # STG - specific domains
+  - domains:
+      - api-stg.corp.local
+      - auth-stg.corp.local
+      - data-stg.corp.local
+    port: 443
+    protocol: http
+    envs: [stg]
+    description: "STG services"
+
+  # PRD - multiple domains including legacy
+  - domains:
+      - api.corp.local
+      - api-legacy.corp.local
+      - auth.corp.local
+      - data.corp.local
+    port: 443
+    protocol: http
+    envs: [prd]
+    description: "PRD services (including legacy during migration)"
+
+  # ==========================================================================
+  # TCP RULES
+  # ==========================================================================
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 5. Single destination, single port - environment-specific
+  # ──────────────────────────────────────────────────────────────────────
+  
+  # DEV
+  - destination: postgres-dev.db.internal
+    port: 5432
+    protocol: tcp
+    envs: [dev]
+    description: "PostgreSQL - DEV"
+
+  # STG
+  - destination: 172.16.10.5
+    port: 5432
+    protocol: tcp
+    envs: [stg]
+    description: "PostgreSQL - STG"
+
+  # PRD
+  - destination: 172.16.20.5
+    port: 5432
+    protocol: tcp
+    envs: [prd]
+    description: "PostgreSQL - PRD"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 6. Multiple destinations with port range - environment-specific
+  # ──────────────────────────────────────────────────────────────────────
+
+  # DEV - small cluster
+  - destinations:
+      - redis-dev-1.internal
+      - redis-dev-2.internal
+      - 10.50.100.10
+    port_range:
+      start: 30000
+      end: 30999
+    protocol: tcp
+    envs: [dev]
+    description: "Redis cluster - DEV (2 nodes + backup)"
+
+  # STG - medium cluster
+  - destinations:
+      - redis-stg-1.internal
+      - redis-stg-2.internal
+      - redis-stg-3.internal
+      - 10.50.200.10
+    port_range:
+      start: 30000
+      end: 30999
+    protocol: tcp
+    envs: [stg]
+    description: "Redis cluster - STG (3 nodes + backup)"
+
+  # PRD - HA cluster with multiple IPs
+  - destinations:
+      - redis-prd-master.internal
+      - redis-prd-replica-1.internal
+      - redis-prd-replica-2.internal
+      - redis-prd-replica-3.internal
+      - 10.50.250.25
+      - 10.50.250.26
+      - 10.50.250.27
+    port_range:
+      start: 30000
+      end: 30999
+    protocol: tcp
+    envs: [prd]
+    description: "Redis cluster - PRD (HA with 4 nodes + 3 static IPs)"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 7. Multiple destinations, single port - shared across environments
+  # ──────────────────────────────────────────────────────────────────────
+  - destinations:
+      - kafka-broker-1.internal
+      - kafka-broker-2.internal
+      - kafka-broker-3.internal
+    port: 9093
+    protocol: tcp
+    envs: [stg, prd]
+    description: "Kafka cluster - STG and PRD"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 8. CIDR range - all environments
+  # ──────────────────────────────────────────────────────────────────────
+  - destination: 10.20.30.0/24
+    port: 9092
+    protocol: tcp
+    envs: [dev, stg, prd]
+    description: "Kafka brokers subnet - all environments"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 9. Monitoring/Observability - all environments
+  # ──────────────────────────────────────────────────────────────────────
+  - destination: prometheus.monitoring.internal
+    port: 9090
+    protocol: tcp
+    envs: [dev, stg, prd]
+    description: "Prometheus metrics endpoint"
+
+  - destination: jaeger-collector.tracing.internal
+    port: 14250
+    protocol: tcp
+    envs: [dev, stg, prd]
+    description: "Jaeger tracing collector"
+
+# =============================================================================
+# USAGE:
+#
+# Generate configs for each environment:
+#   python generate-envoy-config.py --env dev -o envoy-dev.yaml
+#   python generate-envoy-config.py --env stg -o envoy-stg.yaml
+#   python generate-envoy-config.py --env prd -o envoy-prd.yaml
+#
+# Or generate all at once:
+#   ./generate-all-envs.sh
+#
+# Expected output for DEV:
+#   HTTP rules: 5 (example, github, monitoring, *.dev.internal, plus shared)
+#   TCP rules:  5 (postgres-dev, redis-dev, kafka subnet, prometheus, jaeger)
+#
+# Expected output for PRD:
+#   HTTP rules: 3 (example, github, monitoring)
+#   TCP rules:  6 (postgres-prd, redis-prd HA, kafka, subnet, prometheus, jaeger)
+# =============================================================================

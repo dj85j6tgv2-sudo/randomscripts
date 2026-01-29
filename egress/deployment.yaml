@@ -129,6 +129,10 @@ spec:
             - "--log-level"
             - "info"
           securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+                - NET_RAW
             runAsUser: 1337
             runAsGroup: 1337
           ports:
