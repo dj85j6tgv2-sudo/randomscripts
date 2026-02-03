@@ -13,9 +13,11 @@ Features:
 - Multiple destinations: Single rule can have multiple IPs/hostnames
 
 Usage:
+    # With bundled template (from package)
+    python -m jenkins_tools.generate_envoy_config --env dev -a egress-allowlist.yaml -o envoy-dev.yaml
+
+    # With custom template
     python generate-envoy-config.py --env dev -a egress-allowlist.yaml -t envoy.yaml.j2 -o envoy-dev.yaml
-    python generate-envoy-config.py --env stg -a egress-allowlist.yaml -t envoy.yaml.j2 -o envoy-stg.yaml
-    python generate-envoy-config.py --env prd -a egress-allowlist.yaml -t envoy.yaml.j2 -o envoy-prd.yaml
 """
 
 import ipaddress
@@ -23,10 +25,121 @@ import os
 import re
 import socket
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
 from jinja2 import Environment, FileSystemLoader
+
+
+def get_bundled_template_path() -> Optional[str]:
+    """
+    Get the path to the bundled envoy.yaml.j2 template.
+
+    This function tries multiple methods to locate the template:
+    1. importlib.resources (Python 3.9+)
+    2. importlib_resources (backport)
+    3. pkg_resources (setuptools)
+    4. Relative to this script file
+
+    The template is expected to be at: jenkins_tools/config/envoy.yaml.j2
+
+    Returns:
+        Path to the template file, or None if not found
+    """
+    # Method 1: Try importlib.resources (Python 3.9+)
+    try:
+        import importlib.resources as resources
+
+        # For Python 3.9+
+        try:
+            files = resources.files("jenkins_tools.config")
+            template_path = files.joinpath("envoy.yaml.j2")
+            if hasattr(template_path, "exists"):
+                # Python 3.9+
+                if template_path.exists():
+                    return str(template_path)
+            else:
+                # Try to read it (will fail if doesn't exist)
+                with resources.as_file(template_path) as p:
+                    if p.exists():
+                        return str(p)
+        except (TypeError, AttributeError, FileNotFoundError):
+            pass
+
+        # For Python 3.7-3.8
+        try:
+            with resources.path("jenkins_tools.config", "envoy.yaml.j2") as p:
+                if p.exists():
+                    return str(p)
+        except (TypeError, FileNotFoundError, ModuleNotFoundError):
+            pass
+    except ImportError:
+        pass
+
+    # Method 2: Try pkg_resources (setuptools)
+    try:
+        import pkg_resources
+
+        template_path = pkg_resources.resource_filename(
+            "jenkins_tools", "config/envoy.yaml.j2"
+        )
+        if os.path.exists(template_path):
+            return template_path
+    except (ImportError, Exception):
+        pass
+
+    # Method 3: Relative to this script (for development/standalone use)
+    script_dir = Path(__file__).parent
+
+    # Try config subdirectory
+    template_path = script_dir / "config" / "envoy.yaml.j2"
+    if template_path.exists():
+        return str(template_path)
+
+    # Try same directory as script (legacy/standalone)
+    template_path = script_dir / "envoy.yaml.j2"
+    if template_path.exists():
+        return str(template_path)
+
+    return None
+
+
+def get_template_path(user_provided: Optional[str] = None) -> str:
+    """
+    Determine the template path to use.
+
+    Priority:
+    1. User-provided path (if specified and exists)
+    2. Bundled template from package (config/envoy.yaml.j2)
+    3. Default 'envoy.yaml.j2' in current directory
+
+    Args:
+        user_provided: User-specified template path
+
+    Returns:
+        Path to the template file
+    """
+    # If user provided a path and it exists, use it
+    if user_provided and os.path.exists(user_provided):
+        print(f"Using user-provided template: {user_provided}", file=sys.stderr)
+        return user_provided
+
+    # Try to find bundled template
+    bundled_template = get_bundled_template_path()
+    if bundled_template:
+        print(f"Using bundled template: {bundled_template}", file=sys.stderr)
+        return bundled_template
+
+    # Fall back to user-provided path (even if doesn't exist - will error later)
+    if user_provided:
+        print(f"Template not found, trying: {user_provided}", file=sys.stderr)
+        return user_provided
+
+    # Last resort: default name in current directory
+    default_path = "envoy.yaml.j2"
+    print(f"Using default template path: {default_path}", file=sys.stderr)
+    return default_path
 
 
 def is_ip_or_cidr(destination: str) -> bool:
@@ -470,16 +583,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Generate dev config
-  %(prog)s --env dev -a egress-allowlist.yaml -t envoy.yaml.j2 -o envoy-dev.yaml
+  # Generate config using bundled template (recommended)
+  %(prog)s --env dev -a egress-allowlist.yaml -o envoy-dev.yaml
+  %(prog)s --env prd -a egress-allowlist.yaml -o envoy-prd.yaml --validate
 
   # Generate all environments
   %(prog)s --env dev -o envoy-dev.yaml
   %(prog)s --env stg -o envoy-stg.yaml
-  %(prog)s --env prd -o envoy-prd.yaml --validate
+  %(prog)s --env prd -o envoy-prd.yaml
 
-  # Generate and validate
-  %(prog)s --env prd --validate
+  # Use custom template
+  %(prog)s --env prd -t /path/to/custom-envoy.yaml.j2 -o envoy-prd.yaml
+
+  # As Python module (when installed as package)
+  python3 -m jenkins_tools.generate_envoy_config --env prd -a egress-allowlist.yaml
         """,
     )
     parser.add_argument(
@@ -497,8 +614,8 @@ Examples:
     parser.add_argument(
         "-t",
         "--template",
-        default="envoy.yaml.j2",
-        help="Path to Jinja2 template (default: envoy.yaml.j2)",
+        default=None,
+        help="Path to Jinja2 template (default: use bundled template from config/envoy.yaml.j2)",
     )
     parser.add_argument(
         "-o",
@@ -517,10 +634,13 @@ Examples:
     if not args.output:
         args.output = f"envoy-{args.env}.yaml"
 
+    # Resolve template path (use bundled if not specified)
+    template_path = get_template_path(args.template)
+
     # Generate config
     success = generate_envoy_config(
         allowlist_path=args.allowlist,
-        template_path=args.template,
+        template_path=template_path,
         output_path=args.output,
         target_env=args.env,
     )

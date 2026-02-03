@@ -1,0 +1,33 @@
+# MANIFEST.in.example
+#
+# Example manifest file for including non-Python files in the package
+#
+# Usage:
+#   1. Copy this file to your jenkins_tools package root:
+#      cp MANIFEST.in.example /path/to/jenkins_tools/MANIFEST.in
+#
+#   2. This file works together with setup.py to ensure templates are included
+#
+# What it does:
+#   - Ensures config/envoy.yaml.j2 is included in the source distribution
+#   - Include other necessary files like README, LICENSE, etc.
+
+# Include the Jinja2 template
+include jenkins_tools/config/*.j2
+include jenkins_tools/config/envoy.yaml.j2
+
+# Include documentation
+include README.md
+include LICENSE
+include CHANGELOG.md
+
+# Include example files (optional)
+include examples/*.yaml
+include examples/*.py
+
+# Exclude unnecessary files
+global-exclude __pycache__
+global-exclude *.py[co]
+global-exclude .DS_Store
+global-exclude *.so
+global-exclude .git*

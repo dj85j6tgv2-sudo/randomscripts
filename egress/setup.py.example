@@ -1,0 +1,94 @@
+# setup.py.example
+#
+# Example setup.py for packaging jenkins_tools with bundled envoy.yaml.j2 template
+#
+# Usage:
+#   1. Copy this file to your jenkins_tools package root:
+#      cp setup.py.example /path/to/jenkins_tools/setup.py
+#
+#   2. Update the package metadata (name, version, author, etc.)
+#
+#   3. Ensure your directory structure is:
+#      jenkins_tools/
+#      ├── __init__.py
+#      ├── generate_envoy_config.py
+#      ├── config/
+#      │   ├── __init__.py
+#      │   └── envoy.yaml.j2
+#      └── setup.py
+#
+#   4. Install the package:
+#      pip install -e .
+#      # or for production:
+#      pip install .
+#
+#   5. Run the tool:
+#      python3 -m jenkins_tools.generate_envoy_config --env prd -a egress-allowlist.yaml
+
+from setuptools import setup, find_packages
+
+setup(
+    name="jenkins_tools",
+    version="1.0.0",
+    description="Jenkins CI/CD tools for Envoy egress configuration generation",
+    long_description=open("README.md").read() if os.path.exists("README.md") else "",
+    long_description_content_type="text/markdown",
+    author="Your Name",
+    author_email="your.email@company.com",
+    url="https://github.com/your-org/jenkins-tools",
+
+    # Package discovery
+    packages=find_packages(),
+
+    # Include non-Python files (templates)
+    include_package_data=True,
+    package_data={
+        # Include all .j2 templates in config directory
+        "jenkins_tools": ["config/*.j2"],
+
+        # Alternative: Include all files in config directory
+        # "jenkins_tools": ["config/*"],
+
+        # Alternative: Be very specific
+        # "jenkins_tools": ["config/envoy.yaml.j2"],
+    },
+
+    # Python version requirement
+    python_requires=">=3.7",
+
+    # Dependencies
+    install_requires=[
+        "pyyaml>=5.4",
+        "jinja2>=3.0",
+    ],
+
+    # Optional dependencies for development
+    extras_require={
+        "dev": [
+            "pytest>=7.0",
+            "black>=22.0",
+            "flake8>=4.0",
+        ],
+    },
+
+    # Console scripts (optional - creates executable commands)
+    entry_points={
+        "console_scripts": [
+            "generate-envoy-config=jenkins_tools.generate_envoy_config:main",
+        ],
+    },
+
+    # Classifiers for PyPI
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "Topic :: Software Development :: Build Tools",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+    ],
+)
