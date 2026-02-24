@@ -145,13 +145,13 @@ static_resources:
         # ─────────────────────────────────────────
 {% for rule in tcp_rules %}
         # {{ rule.description | default('TCP rule') }} [envs: {{ rule.envs | join(', ') }}]
+{% if rule.port_range %}
+        # filter_chain_match does not support destination_port_range; port range
+        # {{ rule.port_range.start }}-{{ rule.port_range.end }} is enforced via RBAC filter below.
+{% endif %}
         - name: "{{ rule.name }}"
           filter_chain_match:
-{% if rule.port_range %}
-            destination_port_range:
-              start: {{ rule.port_range.start }}
-              end: {{ rule.port_range.end }}
-{% else %}
+{% if not rule.port_range %}
             destination_port: {{ rule.port }}
 {% endif %}
             prefix_ranges:
@@ -160,6 +160,22 @@ static_resources:
                 prefix_len: {{ ip.prefix_len }}
 {% endfor %}
           filters:
+{% if rule.port_range %}
+            - name: envoy.filters.network.rbac
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC
+                stat_prefix: "rbac_{{ rule.stat_name }}"
+                rules:
+                  action: ALLOW
+                  policies:
+                    allow_port_range:
+                      permissions:
+                        - destination_port_range:
+                            start: {{ rule.port_range.start }}
+                            end: {{ rule.port_range.end + 1 }}
+                      principals:
+                        - any: true
+{% endif %}
             - name: envoy.filters.network.tcp_proxy
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy

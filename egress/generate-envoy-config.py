@@ -9,7 +9,9 @@ Features:
 - HTTP rules: uses hostname directly (matched by :authority header)
 - TCP rules with hostname: resolves DNS to IP at generation time
 - TCP rules with IP/CIDR: uses directly
-- Port ranges: Support for destination_port_range
+- Port ranges: filter_chain_match does not support destination_port_range; port ranges
+  are enforced via an RBAC network filter (envoy.filters.network.rbac) placed before
+  tcp_proxy, using destination_port_range with an exclusive end (allowlist end + 1)
 - Multiple destinations: Single rule can have multiple IPs/hostnames
 
 Usage:

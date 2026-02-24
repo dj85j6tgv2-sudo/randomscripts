@@ -190,15 +190,28 @@ static_resources:
         # ALLOWED TCP DESTINATIONS (STG)
         # ─────────────────────────────────────────
         # Redis cluster - STG [envs: stg]
+        # filter_chain_match does not support destination_port_range; port range
+        # 30000-30999 is enforced via RBAC filter below.
         - name: "allow_redis_stg_1_internal_30000_30999"
           filter_chain_match:
-            destination_port_range:
-              start: 30000
-              end: 30999
             prefix_ranges:
               - address_prefix: "10.50.200.10"
                 prefix_len: 32
           filters:
+            - name: envoy.filters.network.rbac
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC
+                stat_prefix: "rbac_redis_stg_1_internal_30000_30999"
+                rules:
+                  action: ALLOW
+                  policies:
+                    allow_port_range:
+                      permissions:
+                        - destination_port_range:
+                            start: 30000
+                            end: 31000
+                      principals:
+                        - any: true
             - name: envoy.filters.network.tcp_proxy
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
