@@ -174,7 +174,7 @@ static_resources:
         # Redis cluster - DEV [envs: dev]
         - name: "allow_redis_dev_1_internal_30000_30999"
           filter_chain_match:
-            destination_port_range:
+            port_range:
               start: 30000
               end: 30999
             prefix_ranges:
