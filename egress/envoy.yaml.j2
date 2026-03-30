@@ -184,6 +184,67 @@ static_resources:
 
 {% endfor %}
         # ─────────────────────────────────────────
+        # ALLOWED gRPC DESTINATIONS ({{ target_env | upper }})
+        # ─────────────────────────────────────────
+{% for rule in grpc_rules %}
+        # {{ rule.description | default('gRPC rule') }} [envs: {{ rule.envs | join(', ') }}]
+        - name: "{{ rule.name }}"
+          filter_chain_match:
+{% if rule.port_range %}
+            port_range:
+              start: {{ rule.port_range.start }}
+              end: {{ rule.port_range.end }}
+{% else %}
+            destination_port: {{ rule.port }}
+{% endif %}
+            prefix_ranges:
+{% for ip in rule.ip_addresses %}
+              - address_prefix: "{{ ip.address }}"
+                prefix_len: {{ ip.prefix_len }}
+{% endfor %}
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                codec_type: HTTP2
+                stat_prefix: "grpc_{{ rule.stat_name }}"
+                access_log:
+                  - name: envoy.access_loggers.file
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                      path: /dev/stdout
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          listener: "grpc"
+                          environment: "{{ target_env }}"
+                          decision: "ALLOWED"
+                          rule: "{{ rule.description | default('gRPC rule') }}"
+                          destination: "%UPSTREAM_HOST%"
+                          grpc_status: "%GRPC_STATUS%"
+                          bytes_rx: "%BYTES_RECEIVED%"
+                          bytes_tx: "%BYTES_SENT%"
+                          duration_ms: "%DURATION%"
+                route_config:
+                  name: "grpc_{{ rule.stat_name }}"
+                  virtual_hosts:
+                    - name: "grpc_{{ rule.stat_name }}"
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: {{ rule.cluster_name | default('original_dst') }}
+                            timeout: 0s
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                http2_protocol_options:
+                  max_concurrent_streams: 100
+
+{% endfor %}
+        # ─────────────────────────────────────────
         # DEFAULT DENY
         # ─────────────────────────────────────────
         - filters:
@@ -237,3 +298,47 @@ static_resources:
                     socket_address:
                       address: 127.0.0.1
                       port_value: 9901
+
+    # ─────────────────────────────────────────
+    # mTLS CLUSTERS ({{ target_env | upper }})
+    # ─────────────────────────────────────────
+{% for rule in mtls_clusters %}
+    # {{ rule.description | default('mTLS cluster') }}
+    - name: "{{ rule.cluster_name }}"
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 10s
+{% if rule.is_grpc | default(false) %}
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+{% endif %}
+      load_assignment:
+        cluster_name: "{{ rule.cluster_name }}"
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: {{ rule.sni }}
+                      port_value: {{ rule.upstream_port }}
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: {{ rule.sni }}
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain:
+                  filename: {{ rule.tls.cert }}
+                private_key:
+                  filename: {{ rule.tls.key }}
+{% if rule.tls.ca %}
+            validation_context:
+              trusted_ca:
+                filename: {{ rule.tls.ca }}
+{% endif %}
+
+{% endfor %}
