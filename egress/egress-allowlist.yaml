@@ -4,17 +4,23 @@
 # This file is version-controlled and requires PR approval for changes.
 #
 # Format:
-#   - destination/destinations: hostname or IP/CIDR (can be a list for TCP)
+#   - destination/destinations: hostname or IP/CIDR (can be a list for TCP/gRPC)
 #     port/port_range: port number or range (start/end)
-#     protocol: http | tcp
+#     protocol: http | tcp | grpc
 #     envs: [dev, stg, prd] - which environments this rule applies to
+#     tls:                   - optional, for mTLS (tcp/grpc only)
+#       cert: /path/to/client.crt
+#       key: /path/to/client.key
+#       ca: /path/to/ca.crt   (optional)
 #     description: optional description
 #
 # Rules:
 #   - protocol: http  → Uses HTTP_PROXY, matched by hostname
 #   - protocol: tcp   → Matched by IP (hostnames resolved at deploy time)
 #                       Supports port_range (start/end) and multiple destinations
+#   - protocol: grpc  → Like TCP but uses HTTP/2 codec for gRPC traffic
 #   - envs: List of environments where this rule applies. If omitted, applies to ALL environments.
+#   - tls: mTLS config for tcp/grpc rules. Requires cert and key paths. ca is optional.
 
 egress:
   # ─────────────────────────────────────────────────────────────────────────
@@ -185,3 +191,54 @@ egress:
     protocol: tcp
     envs: [prd]
     description: "PostgreSQL database - PRD"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # gRPC destinations (matched by IP, uses HTTP/2 codec)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  # Dagster code server - gRPC (scheduler to code-server communication)
+  - destination: dagster-code-server.dagster.svc.cluster.local
+    port: 4266
+    protocol: grpc
+    envs: [dev, stg]
+    description: "Dagster code server gRPC - DEV/STG"
+
+  - destinations:
+      - dagster-code-server-1.dagster.svc.cluster.local
+      - dagster-code-server-2.dagster.svc.cluster.local
+    port: 4266
+    protocol: grpc
+    envs: [prd]
+    description: "Dagster code servers gRPC - PRD"
+
+  # Jaeger collector - gRPC (tracing)
+  - destination: jaeger-collector.tracing.internal
+    port: 14250
+    protocol: grpc
+    envs: [dev, stg, prd]
+    description: "Jaeger tracing collector gRPC"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # mTLS destinations (client certificate authentication)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  # Payment gateway - mTLS required
+  - destination: payment-gateway.partner.com
+    port: 8443
+    protocol: tcp
+    tls:
+      cert: /etc/envoy/certs/payment/client.crt
+      key: /etc/envoy/certs/payment/client.key
+      ca: /etc/envoy/certs/payment/ca.crt
+    envs: [stg, prd]
+    description: "Payment gateway mTLS"
+
+  # Secure gRPC endpoint - mTLS + gRPC
+  - destination: secure-api.partner.com
+    port: 50051
+    protocol: grpc
+    tls:
+      cert: /etc/envoy/certs/partner/client.crt
+      key: /etc/envoy/certs/partner/client.key
+    envs: [prd]
+    description: "Secure partner API gRPC mTLS"
