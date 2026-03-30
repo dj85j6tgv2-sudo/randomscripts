@@ -12,6 +12,8 @@ This guide explains how to configure egress rules in `egress-allowlist.yaml` for
 - [Protocol Types](#protocol-types)
   - [HTTP Rules](#http-rules)
   - [TCP Rules](#tcp-rules)
+  - [gRPC Rules](#protocol-grpc)
+  - [mTLS](#mtls-mutual-tls)
 - [Environment Filtering](#environment-filtering)
 - [Port Configuration](#port-configuration)
 - [Destination Configuration](#destination-configuration)
@@ -60,7 +62,7 @@ egress:
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `protocol` | Yes | `http` or `tcp` | Traffic protocol type |
+| `protocol` | Yes | `http`, `tcp`, or `grpc` | Traffic protocol type |
 | `destination` | Yes* | string | Single hostname, IP, or CIDR |
 | `destinations` | Yes* | list | Multiple hostnames/IPs/CIDRs (TCP only) |
 | `domains` | Yes* | list | Multiple hostnames (HTTP only) |
@@ -189,6 +191,75 @@ Mix hostnames, IPs, and CIDRs in a single rule:
 
 ---
 
+### Protocol: `grpc`
+
+gRPC rules handle HTTP/2-based gRPC traffic. They work like TCP rules (hostnames resolved to IPs at generation time) but generate HTTP/2-aware filter chains instead of raw TCP proxy.
+
+**When to use:** For gRPC services like Dagster code servers, Jaeger collectors, or any service communicating over gRPC (HTTP/2 + protobuf).
+
+**Fields:** Same as TCP — `destination`, `destinations`, `port`, `port_range`, `envs`, `description`. Also supports optional `tls` block for mTLS.
+
+```yaml
+# Single gRPC destination
+- destination: dagster-code-server.dagster.svc.cluster.local
+  port: 4266
+  protocol: grpc
+  envs: [dev, stg]
+  description: "Dagster code server gRPC"
+
+# Multiple gRPC destinations
+- destinations:
+    - grpc-server-1.internal
+    - grpc-server-2.internal
+  port: 50051
+  protocol: grpc
+  description: "gRPC backend servers"
+```
+
+**Key behavior:**
+- Uses `codec_type: HTTP2` on the Envoy filter chain
+- `timeout: 0s` for long-lived gRPC streams
+- Intercepted by iptables (transparent proxy on :15001), not HTTP_PROXY
+- Logs include `grpc_status` field
+
+---
+
+### mTLS (Mutual TLS)
+
+Add an optional `tls` block to any `tcp` or `grpc` rule to enable client certificate authentication:
+
+```yaml
+- destination: payment-gateway.partner.com
+  port: 8443
+  protocol: tcp
+  tls:
+    cert: /etc/envoy/certs/payment/client.crt   # required
+    key: /etc/envoy/certs/payment/client.key     # required
+    ca: /etc/envoy/certs/payment/ca.crt          # optional (server verification)
+  description: "Payment gateway mTLS"
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `cert` | Yes | Path to client certificate file |
+| `key` | Yes | Path to client private key file |
+| `ca` | No | Path to CA cert for server verification |
+
+**How it works:**
+- Rules with `tls` generate a dedicated named cluster with `UpstreamTlsContext`
+- The cluster uses `STRICT_DNS` type (not `ORIGINAL_DST`)
+- SNI is set to the original hostname
+- For `grpc` + `tls`, the cluster also enables HTTP/2 upstream protocol
+- `ca` is optional — omit it to skip server certificate verification
+
+**Not supported on:** `http` rules (HTTP uses CONNECT tunnel — TLS is end-to-end between client and server).
+
+**Certificate management:** Certificates are expected as files on the container filesystem. Mount them via Kubernetes Secrets, CyberArk sidecar injection, or any method that produces files at the specified paths.
+
+---
+
 ## Environment Filtering
 
 The `envs` field controls which environments a rule applies to.
@@ -274,6 +345,8 @@ Common pattern for different endpoints per environment:
 ### Port Range
 
 Use for services that use dynamic port allocation (e.g., Redis Cluster, Kafka):
+
+Port ranges use Envoy's native `filter_chain_match.port_range` for efficient matching. Both `start` and `end` are inclusive.
 
 ```yaml
 - destination: redis-cluster.internal
