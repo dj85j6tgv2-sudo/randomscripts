@@ -239,6 +239,13 @@ def process_http_rules(rules: List[Dict], target_env: str) -> List[Dict]:
         if protocol != "http":
             continue
 
+        # Validate: tls block not allowed on HTTP rules
+        if "tls" in rule:
+            print(
+                f"WARNING: 'tls' block on HTTP rule is not supported (HTTP uses CONNECT tunnel), ignoring tls config",
+                file=sys.stderr,
+            )
+
         if not rule_applies_to_env(rule, target_env):
             continue
 
@@ -408,6 +415,22 @@ def process_tcp_rules(
         else:
             tcp_rule["port_range"] = port_range
 
+        # Handle mTLS if tls block present
+        tls_config = rule.get("tls")
+        if tls_config:
+            if "cert" not in tls_config or "key" not in tls_config:
+                print(
+                    f"ERROR: TCP rule with tls block missing 'cert' or 'key', skipping",
+                    file=sys.stderr,
+                )
+                continue
+            cluster_name = sanitize_name(f"mtls_{first_dest}_{port_str}")
+            tcp_rule["tls"] = tls_config
+            tcp_rule["cluster_name"] = cluster_name
+            original_hostnames = [d for d in destinations if not is_ip_or_cidr(d)]
+            tcp_rule["sni"] = original_hostnames[0] if original_hostnames else first_dest
+            tcp_rule["upstream_port"] = port if port else port_range["start"]
+
         tcp_rules.append(tcp_rule)
 
         # Logging
@@ -427,18 +450,181 @@ def process_tcp_rules(
     return tcp_rules
 
 
+def process_grpc_rules(
+    rules: List[Dict], target_env: str, dns_cache: Dict[str, List[str]]
+) -> List[Dict]:
+    """
+    Process gRPC rules for the target environment.
+
+    gRPC rules are similar to TCP rules but generate HTTP/2 filter chains
+    instead of raw tcp_proxy. Hostnames are resolved to IPs at generation time.
+
+    Args:
+        rules: List of all egress rules
+        target_env: Target environment (dev/stg/prd)
+        dns_cache: DNS resolution cache
+
+    Returns:
+        List of processed gRPC rules
+    """
+    grpc_rules = []
+
+    for rule in rules:
+        protocol = rule.get("protocol", "tcp").lower()
+        if protocol != "grpc":
+            continue
+
+        if not rule_applies_to_env(rule, target_env):
+            continue
+
+        description = rule.get("description", "")
+        envs = rule.get("envs", ["dev", "stg", "prd"])
+
+        # Get destinations (single or multiple)
+        destinations = []
+        if "destination" in rule:
+            destinations = [rule["destination"]]
+        elif "destinations" in rule:
+            destinations = rule["destinations"]
+        else:
+            print(
+                f"WARNING: gRPC rule missing 'destination' or 'destinations', skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        # Get port or port_range
+        port = None
+        port_range = None
+        if "port" in rule:
+            port = int(rule["port"])
+        elif "port_range" in rule:
+            port_range = {
+                "start": int(rule["port_range"]["start"]),
+                "end": int(rule["port_range"]["end"]),
+            }
+        else:
+            print(
+                f"WARNING: gRPC rule missing 'port' or 'port_range', skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        # Resolve all destinations to IPs
+        ip_addresses = []
+        resolved_destinations = []
+        original_hostnames = []
+
+        for destination in destinations:
+            if is_ip_or_cidr(destination):
+                ip_address, prefix_len = parse_cidr(destination)
+                ip_addresses.append(
+                    {
+                        "address": ip_address,
+                        "prefix_len": prefix_len,
+                    }
+                )
+                resolved_destinations.append(destination)
+            else:
+                original_hostnames.append(destination)
+                if destination in dns_cache:
+                    ips = dns_cache[destination]
+                else:
+                    ips = resolve_hostname(destination)
+                    dns_cache[destination] = ips
+
+                if not ips:
+                    print(
+                        f"ERROR: Cannot resolve {destination} for {target_env}, skipping",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                for ip in ips:
+                    ip_addresses.append(
+                        {
+                            "address": ip,
+                            "prefix_len": 32,
+                        }
+                    )
+                    resolved_destinations.append(f"{destination}->{ip}")
+
+        if not ip_addresses:
+            print(f"WARNING: No valid IPs for gRPC rule, skipping", file=sys.stderr)
+            continue
+
+        # Create rule name
+        if port:
+            port_str = str(port)
+        else:
+            port_str = f"{port_range['start']}_{port_range['end']}"
+
+        first_dest = destinations[0]
+        rule_name = sanitize_name(f"allow_{first_dest}_{port_str}")
+        stat_name = sanitize_name(f"{first_dest}_{port_str}")
+
+        grpc_rule = {
+            "name": rule_name,
+            "description": description,
+            "destinations": destinations,
+            "ip_addresses": ip_addresses,
+            "stat_name": stat_name,
+            "envs": envs,
+            "original_hostnames": original_hostnames,
+            "is_grpc": True,
+        }
+
+        if port:
+            grpc_rule["port"] = port
+        else:
+            grpc_rule["port_range"] = port_range
+
+        # Handle mTLS if tls block present
+        tls_config = rule.get("tls")
+        if tls_config:
+            if "cert" not in tls_config or "key" not in tls_config:
+                print(
+                    f"ERROR: gRPC rule with tls block missing 'cert' or 'key', skipping",
+                    file=sys.stderr,
+                )
+                continue
+            cluster_name = sanitize_name(f"mtls_{first_dest}_{port_str}")
+            grpc_rule["tls"] = tls_config
+            grpc_rule["cluster_name"] = cluster_name
+            grpc_rule["sni"] = original_hostnames[0] if original_hostnames else first_dest
+            grpc_rule["upstream_port"] = port if port else port_range["start"]
+
+        grpc_rules.append(grpc_rule)
+
+        # Logging
+        dest_summary = ", ".join(resolved_destinations)
+        if port:
+            print(
+                f"[gRPC] {target_env.upper()}: {dest_summary}:{port} ({len(ip_addresses)} IPs)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[gRPC] {target_env.upper()}: {dest_summary}:{port_range['start']}-{port_range['end']} ({len(ip_addresses)} IPs)",
+                file=sys.stderr,
+            )
+
+    return grpc_rules
+
+
 def process_allowlist(
     allowlist_path: str, target_env: str
-) -> Tuple[List[Dict], List[Dict]]:
+) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict]]:
     """
-    Process allowlist and return (http_rules, tcp_rules) for target environment.
+    Process allowlist and return (http_rules, tcp_rules, grpc_rules, mtls_clusters)
+    for target environment.
 
     Args:
         allowlist_path: Path to the allowlist YAML file
         target_env: Target environment (dev/stg/prd)
 
     Returns:
-        Tuple of (http_rules, tcp_rules) lists
+        Tuple of (http_rules, tcp_rules, grpc_rules, mtls_clusters) lists
     """
     with open(allowlist_path, "r") as f:
         config = yaml.safe_load(f)
@@ -448,8 +634,15 @@ def process_allowlist(
 
     http_rules = process_http_rules(rules, target_env)
     tcp_rules = process_tcp_rules(rules, target_env, dns_cache)
+    grpc_rules = process_grpc_rules(rules, target_env, dns_cache)
 
-    return http_rules, tcp_rules
+    # Extract mTLS clusters from tcp and grpc rules
+    mtls_clusters = []
+    for rule in tcp_rules + grpc_rules:
+        if "tls" in rule:
+            mtls_clusters.append(rule)
+
+    return http_rules, tcp_rules, grpc_rules, mtls_clusters
 
 
 def generate_envoy_config(
@@ -488,14 +681,17 @@ def generate_envoy_config(
         return False
 
     # Process allowlist
-    http_rules, tcp_rules = process_allowlist(allowlist_path, target_env)
+    http_rules, tcp_rules, grpc_rules, mtls_clusters = process_allowlist(allowlist_path, target_env)
 
     print(f"\n{'─' * 70}", file=sys.stderr)
     print(f"Summary for {target_env.upper()}:", file=sys.stderr)
-    print(f"  HTTP rules: {len(http_rules)}", file=sys.stderr)
-    print(f"  TCP rules:  {len(tcp_rules)}", file=sys.stderr)
+    print(f"  HTTP rules:     {len(http_rules)}", file=sys.stderr)
+    print(f"  TCP rules:      {len(tcp_rules)}", file=sys.stderr)
+    print(f"  gRPC rules:     {len(grpc_rules)}", file=sys.stderr)
+    print(f"  mTLS clusters:  {len(mtls_clusters)}", file=sys.stderr)
     total_ips = sum(len(rule["ip_addresses"]) for rule in tcp_rules)
-    print(f"  Total IPs:  {total_ips}", file=sys.stderr)
+    total_grpc_ips = sum(len(rule["ip_addresses"]) for rule in grpc_rules)
+    print(f"  Total IPs:      {total_ips + total_grpc_ips}", file=sys.stderr)
     print(f"{'─' * 70}\n", file=sys.stderr)
 
     # Load Jinja2 template
@@ -520,6 +716,8 @@ def generate_envoy_config(
         output = template.render(
             http_rules=http_rules,
             tcp_rules=tcp_rules,
+            grpc_rules=grpc_rules,
+            mtls_clusters=mtls_clusters,
             target_env=target_env,
         )
     except Exception as e:
