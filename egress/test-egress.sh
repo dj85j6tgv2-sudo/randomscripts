@@ -115,7 +115,60 @@ echo ""
 echo "─────────────────────────────────────────────"
 echo "Test 7: Cluster Status"
 echo "─────────────────────────────────────────────"
-curl -s "http://${PROXY_HOST}:${ADMIN_PORT}/clusters" | grep -E "^(dynamic_forward_proxy|original_dst|blackhole)" | head -10
+curl -s "http://${PROXY_HOST}:${ADMIN_PORT}/clusters" | grep -E "^(dynamic_forward_proxy|original_dst|blackhole|mtls_)" | head -15
+echo ""
+
+# Test 8: Port range config verification
+echo "─────────────────────────────────────────────"
+echo "Test 8: port_range uses native filter_chain_match (no RBAC)"
+echo "─────────────────────────────────────────────"
+CONFIG_FILE="${CONFIG_FILE:-envoy-dev.yaml}"
+if [ -f "$CONFIG_FILE" ]; then
+    RBAC_COUNT=$(grep -c "envoy.filters.network.rbac" "$CONFIG_FILE" 2>/dev/null || echo "0")
+    PORT_RANGE_COUNT=$(grep -c "port_range:" "$CONFIG_FILE" 2>/dev/null || echo "0")
+    if [ "$RBAC_COUNT" = "0" ] && [ "$PORT_RANGE_COUNT" -gt "0" ]; then
+        pass "No RBAC filters found, $PORT_RANGE_COUNT port_range entries in filter_chain_match"
+    elif [ "$RBAC_COUNT" != "0" ]; then
+        fail "Found $RBAC_COUNT RBAC filter(s) — should use native port_range instead"
+    else
+        warn "No port_range rules found in config (may be expected)"
+    fi
+else
+    warn "Config file $CONFIG_FILE not found, skipping"
+fi
+echo ""
+
+# Test 9: gRPC filter chain verification
+echo "─────────────────────────────────────────────"
+echo "Test 9: gRPC filter chains use HTTP/2 codec"
+echo "─────────────────────────────────────────────"
+if [ -f "$CONFIG_FILE" ]; then
+    GRPC_COUNT=$(grep -c "codec_type: HTTP2" "$CONFIG_FILE" 2>/dev/null || echo "0")
+    if [ "$GRPC_COUNT" -gt "0" ]; then
+        pass "Found $GRPC_COUNT gRPC filter chain(s) with HTTP2 codec"
+    else
+        warn "No gRPC filter chains found in config (may be expected if no gRPC rules)"
+    fi
+else
+    warn "Config file $CONFIG_FILE not found, skipping"
+fi
+echo ""
+
+# Test 10: mTLS cluster verification
+echo "─────────────────────────────────────────────"
+echo "Test 10: mTLS cluster configuration"
+echo "─────────────────────────────────────────────"
+if [ -f "$CONFIG_FILE" ]; then
+    MTLS_COUNT=$(grep -c "UpstreamTlsContext" "$CONFIG_FILE" 2>/dev/null || echo "0")
+    if [ "$MTLS_COUNT" -gt "0" ]; then
+        pass "Found $MTLS_COUNT mTLS cluster(s) with UpstreamTlsContext"
+        grep "certificate_chain:" "$CONFIG_FILE" | sed 's/^/  /'
+    else
+        warn "No mTLS clusters found in config (may be expected)"
+    fi
+else
+    warn "Config file $CONFIG_FILE not found, skipping"
+fi
 echo ""
 
 echo "=============================================="
