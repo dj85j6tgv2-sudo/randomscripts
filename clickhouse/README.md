@@ -1,6 +1,6 @@
 # ClickHouse Cluster Monitoring Suite
 
-Read-only DBA monitoring for multi-node ClickHouse clusters with replication. Organized as domain-grouped SQL files with thin shell wrappers.
+Read-only DBA monitoring for multi-node ClickHouse clusters with replication. Organized as domain-grouped SQL files with thin shell wrappers — available for both **Bash (Linux/macOS)** and **PowerShell (Windows)**.
 
 ---
 
@@ -8,12 +8,14 @@ Read-only DBA monitoring for multi-node ClickHouse clusters with replication. Or
 
 - `clickhouse-client` installed and on your `$PATH`
 - Network access to your ClickHouse cluster (native protocol, port 9000 by default)
-- Bash 4+
+- **Bash:** Bash 4+ (Linux / macOS)
+- **PowerShell:** PowerShell 5.1+ or PowerShell 7+ (Windows)
 
 ---
 
 ## Quick Start
 
+**Bash (Linux / macOS):**
 ```bash
 # Run the full report with defaults (localhost, last 24h)
 bash clickhouse/report_all.sh
@@ -24,6 +26,24 @@ CLICKHOUSE_HOST=ch-node1.internal bash clickhouse/report_all.sh
 # With authentication
 CLICKHOUSE_HOST=ch-node1.internal CLICKHOUSE_USER=dba CLICKHOUSE_PASSWORD=secret bash clickhouse/report_all.sh
 ```
+
+**PowerShell (Windows):**
+```powershell
+# Run the full report with defaults (localhost, last 24h)
+.\clickhouse\report_all.ps1
+
+# Run against your actual cluster
+$env:CLICKHOUSE_HOST = "ch-node1.internal"; .\clickhouse\report_all.ps1
+
+# With authentication
+$env:CLICKHOUSE_HOST = "ch-node1.internal"
+$env:CLICKHOUSE_USER = "dba"
+$env:CLICKHOUSE_PASSWORD = "secret"
+.\clickhouse\report_all.ps1
+```
+
+> **PowerShell execution policy:** If scripts are blocked, run once:
+> `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
 
 ---
 
@@ -40,6 +60,9 @@ All settings are passed via environment variables — no files to edit.
 | `CLICKHOUSE_CLUSTER` | `default` | Cluster name as defined in `system.clusters` |
 | `LOOKBACK_HOURS` | `24` | How far back time-windowed queries look |
 
+**Bash:** `VARNAME=value bash clickhouse/report_all.sh`
+**PowerShell:** `$env:VARNAME = "value"; .\clickhouse\report_all.ps1`
+
 **Check your cluster name:**
 ```sql
 SELECT cluster, host_name FROM system.clusters;
@@ -51,11 +74,20 @@ SELECT cluster, host_name FROM system.clusters;
 
 All time-based queries (slow queries, user activity, insert rates, errors) respect `LOOKBACK_HOURS`.
 
+**Bash:**
 ```bash
 LOOKBACK_HOURS=1   bash clickhouse/report_all.sh   # last 1 hour
 LOOKBACK_HOURS=24  bash clickhouse/report_all.sh   # last 24 hours (default)
 LOOKBACK_HOURS=168 bash clickhouse/report_all.sh   # last 7 days
 LOOKBACK_HOURS=720 bash clickhouse/report_all.sh   # last 30 days
+```
+
+**PowerShell:**
+```powershell
+$env:LOOKBACK_HOURS = 1;   .\clickhouse\report_all.ps1   # last 1 hour
+$env:LOOKBACK_HOURS = 24;  .\clickhouse\report_all.ps1   # last 24 hours (default)
+$env:LOOKBACK_HOURS = 168; .\clickhouse\report_all.ps1   # last 7 days
+$env:LOOKBACK_HOURS = 720; .\clickhouse\report_all.ps1   # last 30 days
 ```
 
 Queries that show **live state** (currently running queries, active merges, mutations, disk space, system metrics) are always point-in-time and ignore `LOOKBACK_HOURS`.
@@ -64,8 +96,7 @@ Queries that show **live state** (currently running queries, active merges, muta
 
 ## Running Individual Domains
 
-Run a single domain when you only need one area of visibility:
-
+**Bash:**
 ```bash
 bash clickhouse/cluster/report.sh        # Node health + replication queue
 bash clickhouse/disk/report.sh           # Disk space + table sizes + part health
@@ -74,12 +105,21 @@ bash clickhouse/users/report.sh          # User activity + errors + top tables
 bash clickhouse/merges/report.sh         # Active merges + mutations + queue depth
 bash clickhouse/inserts/report.sh        # Insert rates + async insert queue
 bash clickhouse/system_metrics/report.sh # Live metrics + cumulative events
+
+LOOKBACK_HOURS=1 CLICKHOUSE_HOST=ch-node2 bash clickhouse/queries/report.sh
 ```
 
-Environment variables apply to individual domain runs too:
+**PowerShell:**
+```powershell
+.\clickhouse\cluster\report.ps1
+.\clickhouse\disk\report.ps1
+.\clickhouse\queries\report.ps1
+.\clickhouse\users\report.ps1
+.\clickhouse\merges\report.ps1
+.\clickhouse\inserts\report.ps1
+.\clickhouse\system_metrics\report.ps1
 
-```bash
-LOOKBACK_HOURS=1 CLICKHOUSE_HOST=ch-node2 bash clickhouse/queries/report.sh
+$env:LOOKBACK_HOURS = 1; $env:CLICKHOUSE_HOST = "ch-node2"; .\clickhouse\queries\report.ps1
 ```
 
 ---
@@ -161,24 +201,39 @@ clickhouse-client \
 
 **Morning health check:**
 ```bash
+# Bash
 CLICKHOUSE_HOST=ch-node1.internal bash clickhouse/report_all.sh 2>&1 | tee /tmp/ch-report-$(date +%F).txt
+```
+```powershell
+# PowerShell
+$env:CLICKHOUSE_HOST = "ch-node1.internal"
+.\clickhouse\report_all.ps1 | Tee-Object -FilePath "C:\Logs\ch-report-$(Get-Date -Format 'yyyy-MM-dd').txt"
 ```
 
 **Investigate a slow period from yesterday:**
 ```bash
 CLICKHOUSE_HOST=ch-node1.internal LOOKBACK_HOURS=48 bash clickhouse/queries/report.sh
 ```
+```powershell
+$env:CLICKHOUSE_HOST = "ch-node1.internal"; $env:LOOKBACK_HOURS = 48; .\clickhouse\queries\report.ps1
+```
 
 **Check who is hammering the cluster right now:**
 ```bash
 CLICKHOUSE_HOST=ch-node1.internal bash clickhouse/queries/report.sh
-# Then check user activity for the last hour:
 CLICKHOUSE_HOST=ch-node1.internal LOOKBACK_HOURS=1 bash clickhouse/users/report.sh
+```
+```powershell
+$env:CLICKHOUSE_HOST = "ch-node1.internal"; .\clickhouse\queries\report.ps1
+$env:LOOKBACK_HOURS = 1; .\clickhouse\users\report.ps1
 ```
 
 **Diagnose disk pressure:**
 ```bash
 CLICKHOUSE_HOST=ch-node1.internal bash clickhouse/disk/report.sh
+```
+```powershell
+$env:CLICKHOUSE_HOST = "ch-node1.internal"; .\clickhouse\disk\report.ps1
 ```
 
 **Check replication health after a node restart:**
@@ -186,34 +241,60 @@ CLICKHOUSE_HOST=ch-node1.internal bash clickhouse/disk/report.sh
 CLICKHOUSE_HOST=ch-node1.internal bash clickhouse/cluster/report.sh
 CLICKHOUSE_HOST=ch-node1.internal bash clickhouse/merges/report.sh
 ```
+```powershell
+$env:CLICKHOUSE_HOST = "ch-node1.internal"
+.\clickhouse\cluster\report.ps1
+.\clickhouse\merges\report.ps1
+```
 
 **Monthly storage review:**
 ```bash
 CLICKHOUSE_HOST=ch-node1.internal LOOKBACK_HOURS=720 bash clickhouse/inserts/report.sh
+```
+```powershell
+$env:CLICKHOUSE_HOST = "ch-node1.internal"; $env:LOOKBACK_HOURS = 720; .\clickhouse\inserts\report.ps1
 ```
 
 ---
 
 ## Saving Report Output
 
+**Bash:**
 ```bash
-# Save to file
 bash clickhouse/report_all.sh > /tmp/ch-report.txt 2>&1
-
-# Save with timestamp in filename
 bash clickhouse/report_all.sh > /tmp/ch-report-$(date +%F-%H%M).txt 2>&1
-
-# View while saving
 bash clickhouse/report_all.sh 2>&1 | tee /tmp/ch-report.txt
+```
+
+**PowerShell:**
+```powershell
+.\clickhouse\report_all.ps1 | Out-File "C:\Logs\ch-report.txt"
+.\clickhouse\report_all.ps1 | Out-File "C:\Logs\ch-report-$(Get-Date -Format 'yyyy-MM-dd-HHmm').txt"
+.\clickhouse\report_all.ps1 | Tee-Object -FilePath "C:\Logs\ch-report.txt"
 ```
 
 ---
 
-## Scheduled Reports (cron)
+## Scheduled Reports
 
+**Linux/macOS (cron):**
 ```cron
-# Daily report at 08:00, saved to /var/log/clickhouse-reports/
+# Daily report at 08:00
 0 8 * * * CLICKHOUSE_HOST=ch-node1.internal CLICKHOUSE_USER=monitoring bash /opt/scripts/clickhouse/report_all.sh > /var/log/clickhouse-reports/daily-$(date +\%F).txt 2>&1
+```
+
+**Windows (Task Scheduler):**
+```powershell
+# Register a daily scheduled task at 08:00
+$action = New-ScheduledTaskAction -Execute "pwsh.exe" `
+  -Argument "-NonInteractive -File C:\scripts\clickhouse\report_all.ps1" `
+  -WorkingDirectory "C:\scripts"
+$trigger = New-ScheduledTaskTrigger -Daily -At "08:00"
+$env_settings = @(
+    [System.Environment]::SetEnvironmentVariable("CLICKHOUSE_HOST", "ch-node1.internal", "Machine")
+    [System.Environment]::SetEnvironmentVariable("CLICKHOUSE_USER", "monitoring", "Machine")
+)
+Register-ScheduledTask -TaskName "ClickHouse Daily Report" -Action $action -Trigger $trigger
 ```
 
 ---
@@ -223,38 +304,47 @@ bash clickhouse/report_all.sh 2>&1 | tee /tmp/ch-report.txt
 ```
 clickhouse/
 ├── lib/
-│   └── common.sh              # Connection config, run_query helper
+│   ├── common.sh              # Bash: connection config, run_query helper
+│   └── common.ps1             # PowerShell: connection config, Invoke-CHQuery helper
 ├── cluster/
 │   ├── node_status.sql
 │   ├── replication_lag.sql
-│   └── report.sh
+│   ├── report.sh              # Bash runner
+│   └── report.ps1             # PowerShell runner
 ├── disk/
 │   ├── free_space.sql
 │   ├── table_sizes.sql
 │   ├── parts_health.sql
-│   └── report.sh
+│   ├── report.sh
+│   └── report.ps1
 ├── queries/
 │   ├── running_now.sql
 │   ├── slow_queries.sql
 │   ├── memory_heavy.sql
-│   └── report.sh
+│   ├── report.sh
+│   └── report.ps1
 ├── users/
 │   ├── activity.sql
 │   ├── errors.sql
 │   ├── top_tables.sql
-│   └── report.sh
+│   ├── report.sh
+│   └── report.ps1
 ├── merges/
 │   ├── active_merges.sql
 │   ├── mutations.sql
 │   ├── queue_depth.sql
-│   └── report.sh
+│   ├── report.sh
+│   └── report.ps1
 ├── inserts/
 │   ├── insert_rates.sql
 │   ├── async_inserts.sql
-│   └── report.sh
+│   ├── report.sh
+│   └── report.ps1
 ├── system_metrics/
 │   ├── current_metrics.sql
 │   ├── events_summary.sql
-│   └── report.sh
-└── report_all.sh              # Full report runner
+│   ├── report.sh
+│   └── report.ps1
+├── report_all.sh              # Bash: full report runner
+└── report_all.ps1             # PowerShell: full report runner
 ```
