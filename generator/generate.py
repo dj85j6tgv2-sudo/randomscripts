@@ -2,16 +2,40 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import yaml
 
+log = logging.getLogger("egress.generate")
+
 Port = int | tuple[int, int]
 VALID_PROTOCOLS = {"tcp", "http", "https", "grpc"}
 
 Kind = Literal["ip", "cidr", "hostname", "wildcard"]
+
+
+def resolve_hostnames(hostnames: list[str]) -> tuple[dict[str, list[str]], list[str]]:
+    resolved: dict[str, list[str]] = {}
+    failed: list[str] = []
+    for host in sorted(set(hostnames)):
+        try:
+            _, _, ips = socket.gethostbyname_ex(host)
+        except (socket.gaierror, socket.herror) as exc:
+            log.warning(
+                "Hostname %r could not be resolved (%s). "
+                "Check DNS, or replace with IP/CIDR in egress-allowlist.yaml.",
+                host, exc,
+            )
+            failed.append(host)
+            continue
+        ips = sorted(set(ips))
+        log.info("Resolved %s -> %s", host, ",".join(ips))
+        resolved[host] = ips
+    return resolved, failed
 
 
 def classify(value: str) -> tuple[Kind, str]:

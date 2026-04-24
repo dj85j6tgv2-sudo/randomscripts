@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from generator.generate import Rule, load_allowlist, ConfigError, classify
+from generator.generate import Rule, load_allowlist, ConfigError, classify, resolve_hostnames
 
 
 def write_yaml(tmp_path: Path, body: str) -> Path:
@@ -98,3 +98,34 @@ def test_classify_hostname():
 
 def test_classify_wildcard_is_separate_kind():
     assert classify("*.example.com")[0] == "wildcard"
+
+
+def test_resolve_hostnames_success(monkeypatch, caplog):
+    def fake(host):
+        return (host, [], {"a.example.com": ["1.2.3.4", "1.2.3.5"]}[host])
+    monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake)
+
+    resolved, failed = resolve_hostnames(["a.example.com"])
+    assert resolved == {"a.example.com": ["1.2.3.4", "1.2.3.5"]}
+    assert failed == []
+
+
+def test_resolve_hostnames_sorts_ips(monkeypatch):
+    def fake(host):
+        return (host, [], ["10.0.0.5", "10.0.0.1", "10.0.0.3"])
+    monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake)
+
+    resolved, _ = resolve_hostnames(["x.example.com"])
+    assert resolved["x.example.com"] == ["10.0.0.1", "10.0.0.3", "10.0.0.5"]
+
+
+def test_resolve_hostnames_failure(monkeypatch, caplog):
+    import socket as _socket
+
+    def fake(host):
+        raise _socket.gaierror("boom")
+    monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake)
+
+    resolved, failed = resolve_hostnames(["nope.example.com"])
+    assert resolved == {}
+    assert failed == ["nope.example.com"]
