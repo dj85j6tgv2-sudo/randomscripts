@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from generator.generate import Rule, load_allowlist, ConfigError, classify, resolve_hostnames, filter_by_env
+from generator.generate import Rule, load_allowlist, ConfigError, classify, resolve_hostnames, filter_by_env, build_policy
 
 
 def write_yaml(tmp_path: Path, body: str) -> Path:
@@ -138,3 +138,70 @@ def test_filter_by_env_keeps_rule_with_matching_env():
 
     assert filter_by_env([r_prd, r_all, r_dev], "prd") == [r_prd, r_all]
     assert filter_by_env([r_prd, r_all, r_dev], "stg") == [r_all]
+
+
+def test_build_policy_shape_and_dns_and_deny():
+    rules = [Rule(("10.0.0.1",), (443,), None, "api")]
+    policy = build_policy(
+        app="myapp", env="prd", rules=rules,
+        selector={"app": "myapp"}, resolved={},
+    )
+    assert policy["apiVersion"] == "projectcalico.org/v3"
+    assert policy["kind"] == "NetworkPolicy"
+    assert policy["metadata"]["name"] == "myapp-egress"
+    assert policy["metadata"]["namespace"] == "myapp-prd"
+    assert policy["spec"]["selector"] == 'app == "myapp"'
+    assert policy["spec"]["types"] == ["Egress"]
+
+    egress = policy["spec"]["egress"]
+    # First two: DNS UDP/53 and TCP/53
+    assert egress[0]["action"] == "Allow"
+    assert egress[0]["protocol"] == "UDP"
+    assert egress[0]["destination"]["ports"] == [53]
+    assert egress[1]["protocol"] == "TCP"
+    assert egress[1]["destination"]["ports"] == [53]
+    # Middle: our rule
+    assert egress[2] == {
+        "action": "Allow",
+        "protocol": "TCP",
+        "destination": {"nets": ["10.0.0.1/32"], "ports": [443]},
+    }
+    # Last: deny
+    assert egress[-1] == {"action": "Deny"}
+
+
+def test_build_policy_cidr_preserved():
+    rules = [Rule(("10.20.30.0/24",), (9092,), None, None)]
+    policy = build_policy("app", "prd", rules, {"app": "app"}, {})
+    assert policy["spec"]["egress"][2]["destination"]["nets"] == ["10.20.30.0/24"]
+
+
+def test_build_policy_port_range_string():
+    rules = [Rule(("10.0.0.1",), ((30000, 30999),), None, None)]
+    policy = build_policy("app", "dev", rules, {"app": "app"}, {})
+    assert policy["spec"]["egress"][2]["destination"]["ports"] == ["30000:30999"]
+
+
+def test_build_policy_hostname_expands_to_sorted_32s():
+    rules = [Rule(("api.example.com",), (443,), None, None)]
+    resolved = {"api.example.com": ["1.2.3.5", "1.2.3.4"]}
+    policy = build_policy("app", "prd", rules, {"app": "app"}, resolved)
+    assert policy["spec"]["egress"][2]["destination"]["nets"] == [
+        "1.2.3.4/32", "1.2.3.5/32",
+    ]
+
+
+def test_build_policy_skips_rule_with_only_unresolved_hostname():
+    rules = [Rule(("unresolved.example.com",), (443,), None, None)]
+    policy = build_policy("app", "prd", rules, {"app": "app"}, {})
+    # Only DNS allows + deny remain
+    actions = [r["action"] for r in policy["spec"]["egress"]]
+    assert actions == ["Allow", "Allow", "Deny"]
+
+
+def test_build_policy_multi_selector_joined_with_and():
+    policy = build_policy(
+        "app", "prd", [], selector={"app": "app", "tier": "api"}, resolved={},
+    )
+    sel = policy["spec"]["selector"]
+    assert 'app == "app"' in sel and 'tier == "api"' in sel and "&&" in sel

@@ -143,3 +143,81 @@ def load_allowlist(path: Path | str) -> list[Rule]:
             )
         )
     return rules
+
+
+def _port_to_yaml(p: Port) -> int | str:
+    if isinstance(p, tuple):
+        return f"{p[0]}:{p[1]}"
+    return p
+
+
+def _nets_for_destination(dest: str, resolved: dict[str, list[str]]) -> list[str]:
+    kind, value = classify(dest)
+    if kind == "wildcard":
+        raise ConfigError(
+            f"wildcard destination {value!r} is not supported by Calico OSS; "
+            "replace with explicit hostnames or a CIDR."
+        )
+    if kind == "cidr":
+        return [value]
+    if kind == "ip":
+        return [f"{value}/32"]
+    # hostname
+    ips = resolved.get(value, [])
+    return [f"{ip}/32" for ip in ips]
+
+
+def _selector_expr(selector: dict[str, str]) -> str:
+    return " && ".join(f'{k} == "{v}"' for k, v in sorted(selector.items()))
+
+
+def _rule_key(rule: dict) -> tuple:
+    dest = rule.get("destination", {})
+    nets = dest.get("nets") or []
+    ports = dest.get("ports") or []
+    return (rule.get("protocol", ""), tuple(nets[:1]), tuple(str(p) for p in ports[:1]))
+
+
+def build_policy(
+    app: str,
+    env: str,
+    rules: list[Rule],
+    selector: dict[str, str],
+    resolved: dict[str, list[str]],
+) -> dict:
+    egress: list[dict] = [
+        {"action": "Allow", "protocol": "UDP",
+         "destination": {"ports": [53]}},
+        {"action": "Allow", "protocol": "TCP",
+         "destination": {"ports": [53]}},
+    ]
+
+    middle: list[dict] = []
+    for rule in rules:
+        nets: list[str] = []
+        for dest in rule.destinations:
+            nets.extend(_nets_for_destination(dest, resolved))
+        if not nets:
+            continue  # hostname(s) unresolved
+        nets = sorted(set(nets))
+        ports = [_port_to_yaml(p) for p in rule.ports]
+        middle.append({
+            "action": "Allow",
+            "protocol": "TCP",
+            "destination": {"nets": nets, "ports": ports},
+        })
+
+    middle.sort(key=_rule_key)
+    egress.extend(middle)
+    egress.append({"action": "Deny"})
+
+    return {
+        "apiVersion": "projectcalico.org/v3",
+        "kind": "NetworkPolicy",
+        "metadata": {"name": f"{app}-egress", "namespace": f"{app}-{env}"},
+        "spec": {
+            "selector": _selector_expr(selector),
+            "types": ["Egress"],
+            "egress": egress,
+        },
+    }
