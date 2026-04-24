@@ -3,11 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
 
 import yaml
 
-Port = Union[int, tuple[int, int]]
+Port = int | tuple[int, int]
 VALID_PROTOCOLS = {"tcp", "http", "https", "grpc"}
 
 
@@ -41,14 +40,20 @@ def _collect_destinations(entry: dict) -> tuple[str, ...]:
 
 def _collect_ports(entry: dict) -> tuple[Port, ...]:
     has_port = "port" in entry
+    has_ports = "ports" in entry
     has_range = "port_range" in entry
-    if has_port and has_range:
-        raise ConfigError(f"rule sets both port and port_range: {entry!r}")
+    if sum([has_port, has_ports, has_range]) > 1:
+        raise ConfigError(f"rule sets multiple of port/ports/port_range: {entry!r}")
     if has_port:
         value = entry["port"]
         if not isinstance(value, int):
             raise ConfigError(f"port must be int: {entry!r}")
         return (value,)
+    if has_ports:
+        values = entry["ports"]
+        if not (isinstance(values, list) and all(isinstance(v, int) for v in values)):
+            raise ConfigError(f"ports must be a list of ints: {entry!r}")
+        return tuple(values)
     if has_range:
         pr = entry["port_range"]
         if not (isinstance(pr, dict) and isinstance(pr.get("start"), int)
@@ -57,7 +62,7 @@ def _collect_ports(entry: dict) -> tuple[Port, ...]:
         if pr["start"] > pr["end"]:
             raise ConfigError(f"port_range start > end: {entry!r}")
         return ((pr["start"], pr["end"]),)
-    raise ConfigError(f"rule has no port/port_range: {entry!r}")
+    raise ConfigError(f"rule has no port/ports/port_range: {entry!r}")
 
 
 def load_allowlist(path: Path | str) -> list[Rule]:
@@ -77,6 +82,7 @@ def load_allowlist(path: Path | str) -> list[Rule]:
             raise ConfigError(
                 f"protocol must be one of {sorted(VALID_PROTOCOLS)}: {entry!r}"
             )
+        # protocol validated; all accepted values (http/https/tcp/grpc) map to TCP in Calico
         envs_raw = entry.get("envs")
         envs = frozenset(envs_raw) if envs_raw is not None else None
         rules.append(

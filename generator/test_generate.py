@@ -47,6 +47,18 @@ def test_load_collapses_domains_and_destinations(tmp_path):
     assert rules[0].envs is None
     assert rules[1].destinations == ("10.0.0.1", "10.0.0.2")
     assert rules[1].ports == ((30000, 30999),)
+    assert rules[1].envs is None
+
+
+def test_load_multiple_ports_list(tmp_path):
+    path = write_yaml(tmp_path, """
+        egress:
+          - destination: 10.0.0.1
+            ports: [80, 443]
+            protocol: tcp
+    """)
+    rules = load_allowlist(path)
+    assert rules[0].ports == (80, 443)
 
 
 def test_load_rejects_both_destination_and_destinations(tmp_path):
