@@ -1,13 +1,34 @@
 """Calico NetworkPolicy generator from egress-allowlist.yaml."""
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
 Port = int | tuple[int, int]
 VALID_PROTOCOLS = {"tcp", "http", "https", "grpc"}
+
+Kind = Literal["ip", "cidr", "hostname", "wildcard"]
+
+
+def classify(value: str) -> tuple[Kind, str]:
+    if "*" in value:
+        return ("wildcard", value)
+    if "/" in value:
+        try:
+            ipaddress.ip_network(value, strict=False)
+            return ("cidr", value)
+        except ValueError:
+            pass
+    try:
+        ipaddress.ip_address(value)
+        return ("ip", value)
+    except ValueError:
+        pass
+    return ("hostname", value)
 
 
 class ConfigError(ValueError):

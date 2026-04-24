@@ -82,3 +82,22 @@ def test_load_rejects_unknown_protocol(tmp_path):
     """)
     with pytest.raises(ConfigError):
         load_allowlist(path)
+
+
+from generator.generate import classify
+
+
+def test_classify_ip():
+    assert classify("10.0.0.1") == ("ip", "10.0.0.1")
+
+
+def test_classify_cidr():
+    assert classify("10.0.0.0/24") == ("cidr", "10.0.0.0/24")
+
+
+def test_classify_hostname():
+    assert classify("api.example.com") == ("hostname", "api.example.com")
+
+
+def test_classify_wildcard_is_separate_kind():
+    assert classify("*.example.com")[0] == "wildcard"
