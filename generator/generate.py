@@ -25,11 +25,7 @@ def resolve_hostnames(hostnames: list[str]) -> tuple[dict[str, list[str]], list[
         try:
             _, _, ips = socket.gethostbyname_ex(host)
         except (socket.gaierror, socket.herror) as exc:
-            log.warning(
-                "Hostname %r could not be resolved (%s). "
-                "Check DNS, or replace with IP/CIDR in egress-allowlist.yaml.",
-                host, exc,
-            )
+            log.warning("Hostname %r could not be resolved (%s). Check DNS or replace with IP/CIDR.", host, exc)
             failed.append(host)
             continue
         ips = sorted(set(ips))
@@ -76,9 +72,7 @@ def _collect_destinations(entry: dict) -> tuple[str, ...]:
     if not keys:
         raise ConfigError(f"rule has no destination/destinations/domains: {entry!r}")
     if len(keys) > 1:
-        raise ConfigError(
-            f"rule sets multiple of destination/destinations/domains ({keys}): {entry!r}"
-        )
+        raise ConfigError(f"rule sets multiple of destination/destinations/domains ({keys}): {entry!r}")
     value = entry[keys[0]]
     if isinstance(value, str):
         return (value,)
@@ -88,9 +82,7 @@ def _collect_destinations(entry: dict) -> tuple[str, ...]:
 
 
 def _collect_ports(entry: dict) -> tuple[Port, ...]:
-    has_port = "port" in entry
-    has_ports = "ports" in entry
-    has_range = "port_range" in entry
+    has_port, has_ports, has_range = "port" in entry, "ports" in entry, "port_range" in entry
     if sum([has_port, has_ports, has_range]) > 1:
         raise ConfigError(f"rule sets multiple of port/ports/port_range: {entry!r}")
     if has_port:
@@ -128,9 +120,7 @@ def load_allowlist(path: Path | str) -> list[Rule]:
             raise ConfigError(f"rule must be a mapping: {entry!r}")
         protocol = entry.get("protocol")
         if protocol not in VALID_PROTOCOLS:
-            raise ConfigError(
-                f"protocol must be one of {sorted(VALID_PROTOCOLS)}: {entry!r}"
-            )
+            raise ConfigError(f"protocol must be one of {sorted(VALID_PROTOCOLS)}: {entry!r}")
         # protocol validated; all accepted values (http/https/tcp/grpc) map to TCP in Calico
         envs_raw = entry.get("envs")
         envs = frozenset(envs_raw) if envs_raw is not None else None
@@ -145,19 +135,10 @@ def load_allowlist(path: Path | str) -> list[Rule]:
     return rules
 
 
-def _port_to_yaml(p: Port) -> int | str:
-    if isinstance(p, tuple):
-        return f"{p[0]}:{p[1]}"
-    return p
-
-
 def _nets_for_destination(dest: str, resolved: dict[str, list[str]]) -> list[str]:
     kind, value = classify(dest)
     if kind == "wildcard":
-        raise ConfigError(
-            f"wildcard destination {value!r} is not supported by Calico OSS; "
-            "replace with explicit hostnames or a CIDR."
-        )
+        raise ConfigError(f"wildcard {value!r} not supported by Calico OSS; use explicit hostnames or a CIDR.")
     if kind == "cidr":
         return [value]
     if kind == "ip":
@@ -165,17 +146,6 @@ def _nets_for_destination(dest: str, resolved: dict[str, list[str]]) -> list[str
     # hostname
     ips = resolved.get(value, [])
     return [f"{ip}/32" for ip in ips]
-
-
-def _selector_expr(selector: dict[str, str]) -> str:
-    return " && ".join(f'{k} == "{v}"' for k, v in sorted(selector.items()))
-
-
-def _rule_key(rule: dict) -> tuple:
-    dest = rule.get("destination", {})
-    nets = dest.get("nets") or []
-    ports = dest.get("ports") or []
-    return (rule.get("protocol", ""), tuple(nets[:1]), tuple(str(p) for p in ports[:1]))
 
 
 def build_policy(
@@ -200,14 +170,14 @@ def build_policy(
         if not nets:
             continue  # hostname(s) unresolved
         nets = sorted(set(nets))
-        ports = [_port_to_yaml(p) for p in rule.ports]
+        ports = [f"{p[0]}:{p[1]}" if isinstance(p, tuple) else p for p in rule.ports]
         middle.append({
             "action": "Allow",
             "protocol": "TCP",
             "destination": {"nets": nets, "ports": ports},
         })
 
-    middle.sort(key=_rule_key)
+    middle.sort(key=lambda r: (r.get("protocol", ""), tuple((r["destination"].get("nets") or [])[:1]), tuple(str(p) for p in (r["destination"].get("ports") or [])[:1])))
     egress.extend(middle)
     egress.append({"action": "Deny"})
 
@@ -216,7 +186,7 @@ def build_policy(
         "kind": "NetworkPolicy",
         "metadata": {"name": f"{app}-egress", "namespace": f"{app}-{env}"},
         "spec": {
-            "selector": _selector_expr(selector),
+            "selector": " && ".join(f'{k} == "{v}"' for k, v in sorted(selector.items())),
             "types": ["Egress"],
             "egress": egress,
         },
