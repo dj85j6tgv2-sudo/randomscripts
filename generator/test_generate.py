@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from generator.generate import Rule, load_allowlist, ConfigError, classify, resolve_hostnames
+from generator.generate import Rule, load_allowlist, ConfigError, classify, resolve_hostnames, filter_by_env
 
 
 def write_yaml(tmp_path: Path, body: str) -> Path:
@@ -129,3 +129,12 @@ def test_resolve_hostnames_failure(monkeypatch, caplog):
     resolved, failed = resolve_hostnames(["nope.example.com"])
     assert resolved == {}
     assert failed == ["nope.example.com"]
+
+
+def test_filter_by_env_keeps_rule_with_matching_env():
+    r_prd = Rule(("1.1.1.1",), (1,), frozenset({"prd"}), None)
+    r_all = Rule(("2.2.2.2",), (2,), None, None)
+    r_dev = Rule(("3.3.3.3",), (3,), frozenset({"dev"}), None)
+
+    assert filter_by_env([r_prd, r_all, r_dev], "prd") == [r_prd, r_all]
+    assert filter_by_env([r_prd, r_all, r_dev], "stg") == [r_all]

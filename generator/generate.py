@@ -38,6 +38,10 @@ def resolve_hostnames(hostnames: list[str]) -> tuple[dict[str, list[str]], list[
     return resolved, failed
 
 
+def filter_by_env(rules: list[Rule], env: str) -> list[Rule]:
+    return [r for r in rules if r.envs is None or env in r.envs]
+
+
 def classify(value: str) -> tuple[Kind, str]:
     if "*" in value:
         return ("wildcard", value)
