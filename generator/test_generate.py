@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from generator.generate import Rule, load_allowlist, ConfigError
+from generator.generate import Rule, load_allowlist, ConfigError, classify
 
 
 def write_yaml(tmp_path: Path, body: str) -> Path:
@@ -82,9 +82,6 @@ def test_load_rejects_unknown_protocol(tmp_path):
     """)
     with pytest.raises(ConfigError):
         load_allowlist(path)
-
-
-from generator.generate import classify
 
 
 def test_classify_ip():
