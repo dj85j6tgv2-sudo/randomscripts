@@ -1,10 +1,12 @@
 """Calico NetworkPolicy generator from egress-allowlist.yaml."""
 from __future__ import annotations
 
+import argparse
 import ipaddress
 import json as _json
 import logging
 import socket
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -206,3 +208,58 @@ def write_outputs(out_dir: Path | str, policies: dict[str, dict],
     (out / "resolved-ips.json").write_text(
         _json.dumps(sorted_resolved, indent=2, sort_keys=True) + "\n"
     )
+
+
+def _parse_selectors(items: list[str] | None, app: str) -> dict[str, str]:
+    if not items:
+        return {"app": app}
+    out: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise ConfigError(f"--selector must be key=value, got {item!r}")
+        k, v = item.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr)
+    p = argparse.ArgumentParser(prog="generate")
+    p.add_argument("--allowlist", required=True, type=Path)
+    p.add_argument("--app", required=True)
+    p.add_argument("--output-dir", required=True, type=Path)
+    p.add_argument("--selector", action="append",
+                   help="key=value (repeatable). Default: app=<--app>.")
+    p.add_argument("--envs", default="dev,stg,prd",
+                   help="Comma-separated list of environments.")
+    args = p.parse_args(argv)
+
+    try:
+        rules = load_allowlist(args.allowlist)
+        selector = _parse_selectors(args.selector, args.app)
+    except ConfigError as exc:
+        log.error("%s", exc)
+        return 1
+
+    hostnames = [d for r in rules for d in r.destinations if classify(d)[0] == "hostname"]
+    resolved, failed = resolve_hostnames(hostnames)
+
+    envs = [e.strip() for e in args.envs.split(",") if e.strip()]
+    policies: dict[str, dict] = {}
+    try:
+        for env in envs:
+            policies[env] = build_policy(args.app, env, filter_by_env(rules, env), selector, resolved)
+    except ConfigError as exc:
+        log.error("%s", exc)
+        return 1
+
+    write_outputs(args.output_dir, policies, resolved)
+
+    if failed:
+        log.error("Unresolved hostnames: %s", ", ".join(failed))
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
