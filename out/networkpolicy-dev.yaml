@@ -4,8 +4,10 @@ metadata:
   name: python-app-egress
   namespace: python-app-dev
   annotations:
-    egress.policy/rules: 'api.github.com, raw.githubusercontent.com, gist.githubusercontent.com:443
-      - GitHub APIs
+    egress.policy/rules: 'api.github.com [140.82.114.6], raw.githubusercontent.com
+      [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133], gist.githubusercontent.com
+      [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133]:443 - GitHub
+      APIs
 
       internal-api-dev.corp.local:80 - Internal REST API - DEV
 
