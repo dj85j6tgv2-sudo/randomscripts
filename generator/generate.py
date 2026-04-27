@@ -1,4 +1,5 @@
 """Calico NetworkPolicy generator from egress-allowlist.yaml."""
+
 from __future__ import annotations
 
 import argparse
@@ -28,7 +29,11 @@ def resolve_hostnames(hostnames: list[str]) -> tuple[dict[str, list[str]], list[
         try:
             _, _, ips = socket.gethostbyname_ex(host)
         except (socket.gaierror, socket.herror) as exc:
-            log.warning("Hostname %r could not be resolved (%s). Check DNS or replace with IP/CIDR.", host, exc)
+            log.warning(
+                "Hostname %r could not be resolved (%s). Check DNS or replace with IP/CIDR.",
+                host,
+                exc,
+            )
             failed.append(host)
             continue
         ips = sorted(set(ips))
@@ -75,7 +80,9 @@ def _collect_destinations(entry: dict) -> tuple[str, ...]:
     if not keys:
         raise ConfigError(f"rule has no destination/destinations/domains: {entry!r}")
     if len(keys) > 1:
-        raise ConfigError(f"rule sets multiple of destination/destinations/domains ({keys}): {entry!r}")
+        raise ConfigError(
+            f"rule sets multiple of destination/destinations/domains ({keys}): {entry!r}"
+        )
     value = entry[keys[0]]
     if isinstance(value, str):
         return (value,)
@@ -85,7 +92,11 @@ def _collect_destinations(entry: dict) -> tuple[str, ...]:
 
 
 def _collect_ports(entry: dict) -> tuple[Port, ...]:
-    has_port, has_ports, has_range = "port" in entry, "ports" in entry, "port_range" in entry
+    has_port, has_ports, has_range = (
+        "port" in entry,
+        "ports" in entry,
+        "port_range" in entry,
+    )
     if sum([has_port, has_ports, has_range]) > 1:
         raise ConfigError(f"rule sets multiple of port/ports/port_range: {entry!r}")
     if has_port:
@@ -100,8 +111,11 @@ def _collect_ports(entry: dict) -> tuple[Port, ...]:
         return tuple(values)
     if has_range:
         pr = entry["port_range"]
-        if not (isinstance(pr, dict) and isinstance(pr.get("start"), int)
-                and isinstance(pr.get("end"), int)):
+        if not (
+            isinstance(pr, dict)
+            and isinstance(pr.get("start"), int)
+            and isinstance(pr.get("end"), int)
+        ):
             raise ConfigError(f"port_range must be {{start,end}} ints: {entry!r}")
         if pr["start"] > pr["end"]:
             raise ConfigError(f"port_range start > end: {entry!r}")
@@ -123,7 +137,9 @@ def load_allowlist(path: Path | str) -> list[Rule]:
             raise ConfigError(f"rule must be a mapping: {entry!r}")
         protocol = entry.get("protocol")
         if protocol not in VALID_PROTOCOLS:
-            raise ConfigError(f"protocol must be one of {sorted(VALID_PROTOCOLS)}: {entry!r}")
+            raise ConfigError(
+                f"protocol must be one of {sorted(VALID_PROTOCOLS)}: {entry!r}"
+            )
         # protocol validated; all accepted values (http/https/tcp/grpc) map to TCP in Calico
         envs_raw = entry.get("envs")
         envs = frozenset(envs_raw) if envs_raw is not None else None
@@ -163,10 +179,8 @@ def build_policy(
     resolved: dict[str, list[str]],
 ) -> dict:
     egress: list[dict] = [
-        {"action": "Allow", "protocol": "UDP",
-         "destination": {"ports": [53]}},
-        {"action": "Allow", "protocol": "TCP",
-         "destination": {"ports": [53]}},
+        {"action": "Allow", "protocol": "UDP", "destination": {"ports": [53]}},
+        {"action": "Allow", "protocol": "TCP", "destination": {"ports": [53]}},
     ]
 
     middle: list[dict] = []
@@ -178,13 +192,21 @@ def build_policy(
             continue  # hostname(s) unresolved
         nets = sorted(set(nets))
         ports = [f"{p[0]}:{p[1]}" if isinstance(p, tuple) else p for p in rule.ports]
-        middle.append({
-            "action": "Allow",
-            "protocol": "TCP",
-            "destination": {"nets": nets, "ports": ports},
-        })
+        middle.append(
+            {
+                "action": "Allow",
+                "protocol": "TCP",
+                "destination": {"nets": nets, "ports": ports},
+            }
+        )
 
-    middle.sort(key=lambda r: (r.get("protocol", ""), tuple((r["destination"].get("nets") or [])[:1]), tuple(str(p) for p in (r["destination"].get("ports") or [])[:1])))
+    middle.sort(
+        key=lambda r: (
+            r.get("protocol", ""),
+            tuple((r["destination"].get("nets") or [])[:1]),
+            tuple(str(p) for p in (r["destination"].get("ports") or [])[:1]),
+        )
+    )
     egress.extend(middle)
     egress.append({"action": "Deny"})
 
@@ -193,15 +215,18 @@ def build_policy(
         "kind": "NetworkPolicy",
         "metadata": {"name": f"{app}-egress", "namespace": f"{app}-{env}"},
         "spec": {
-            "selector": " && ".join(f'{k} == "{v}"' for k, v in sorted(selector.items())),
+            "selector": " && ".join(
+                f'{k} == "{v}"' for k, v in sorted(selector.items())
+            ),
             "types": ["Egress"],
             "egress": egress,
         },
     }
 
 
-def write_outputs(out_dir: Path | str, policies: dict[str, dict],
-                  resolved: dict[str, list[str]]) -> None:
+def write_outputs(
+    out_dir: Path | str, policies: dict[str, dict], resolved: dict[str, list[str]]
+) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     for env, policy in sorted(policies.items()):
@@ -223,15 +248,25 @@ def _parse_selectors(items: list[str] | None, app: str) -> dict[str, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr)
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr
+    )
     p = argparse.ArgumentParser(prog="generate")
     p.add_argument("--allowlist", required=True, type=Path)
     p.add_argument("--app", required=True)
     p.add_argument("--output-dir", required=True, type=Path)
-    p.add_argument("--selector", action="append", metavar="KEY=VAL",
-                   help="Selector label (repeatable). Default: app=<--app>.")
-    p.add_argument("--envs", default="dev,stg,prd", metavar="ENV,...",
-                   help="Comma-separated environments.")
+    p.add_argument(
+        "--selector",
+        action="append",
+        metavar="KEY=VAL",
+        help="Selector label (repeatable). Default: app=<--app>.",
+    )
+    p.add_argument(
+        "--envs",
+        default="dev,stg,prd",
+        metavar="ENV,...",
+        help="Comma-separated environments.",
+    )
     args = p.parse_args(argv)
     try:
         rules = load_allowlist(args.allowlist)
@@ -239,11 +274,18 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         log.error("%s", exc)
         return 1
-    hostnames = [d for r in rules for d in r.destinations if classify(d)[0] == "hostname"]
+    hostnames = [
+        d for r in rules for d in r.destinations if classify(d)[0] == "hostname"
+    ]
     resolved, failed = resolve_hostnames(hostnames)
     envs = [e.strip() for e in args.envs.split(",") if e.strip()]
     try:
-        policies = {env: build_policy(args.app, env, filter_by_env(rules, env), selector, resolved) for env in envs}
+        policies = {
+            env: build_policy(
+                args.app, env, filter_by_env(rules, env), selector, resolved
+            )
+            for env in envs
+        }
     except ConfigError as exc:
         log.error("%s", exc)
         return 1

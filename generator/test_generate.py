@@ -1,5 +1,4 @@
 import json
-import os
 import subprocess
 import sys
 import textwrap
@@ -7,7 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from generator.generate import Rule, load_allowlist, ConfigError, classify, resolve_hostnames, filter_by_env, build_policy, write_outputs
+from generator.generate import (
+    Rule,
+    load_allowlist,
+    ConfigError,
+    classify,
+    resolve_hostnames,
+    filter_by_env,
+    build_policy,
+    write_outputs,
+)
 
 
 def write_yaml(tmp_path: Path, body: str) -> Path:
@@ -17,13 +25,16 @@ def write_yaml(tmp_path: Path, body: str) -> Path:
 
 
 def test_load_normalizes_singular_destination(tmp_path):
-    path = write_yaml(tmp_path, """
+    path = write_yaml(
+        tmp_path,
+        """
         egress:
           - destination: 10.0.0.1
             port: 443
             protocol: tcp
             envs: [prd]
-    """)
+    """,
+    )
     rules = load_allowlist(path)
     assert rules == [
         Rule(
@@ -36,7 +47,9 @@ def test_load_normalizes_singular_destination(tmp_path):
 
 
 def test_load_collapses_domains_and_destinations(tmp_path):
-    path = write_yaml(tmp_path, """
+    path = write_yaml(
+        tmp_path,
+        """
         egress:
           - domains: [a.example.com, b.example.com]
             port: 443
@@ -44,7 +57,8 @@ def test_load_collapses_domains_and_destinations(tmp_path):
           - destinations: [10.0.0.1, 10.0.0.2]
             port_range: {start: 30000, end: 30999}
             protocol: tcp
-    """)
+    """,
+    )
     rules = load_allowlist(path)
     assert rules[0].destinations == ("a.example.com", "b.example.com")
     assert rules[0].ports == (443,)
@@ -55,35 +69,44 @@ def test_load_collapses_domains_and_destinations(tmp_path):
 
 
 def test_load_multiple_ports_list(tmp_path):
-    path = write_yaml(tmp_path, """
+    path = write_yaml(
+        tmp_path,
+        """
         egress:
           - destination: 10.0.0.1
             ports: [80, 443]
             protocol: tcp
-    """)
+    """,
+    )
     rules = load_allowlist(path)
     assert rules[0].ports == (80, 443)
 
 
 def test_load_rejects_both_destination_and_destinations(tmp_path):
-    path = write_yaml(tmp_path, """
+    path = write_yaml(
+        tmp_path,
+        """
         egress:
           - destination: 10.0.0.1
             destinations: [10.0.0.2]
             port: 1
             protocol: tcp
-    """)
+    """,
+    )
     with pytest.raises(ConfigError):
         load_allowlist(path)
 
 
 def test_load_rejects_unknown_protocol(tmp_path):
-    path = write_yaml(tmp_path, """
+    path = write_yaml(
+        tmp_path,
+        """
         egress:
           - destination: 10.0.0.1
             port: 1
             protocol: quic
-    """)
+    """,
+    )
     with pytest.raises(ConfigError):
         load_allowlist(path)
 
@@ -107,6 +130,7 @@ def test_classify_wildcard_is_separate_kind():
 def test_resolve_hostnames_success(monkeypatch, caplog):
     def fake(host):
         return (host, [], {"a.example.com": ["1.2.3.4", "1.2.3.5"]}[host])
+
     monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake)
 
     resolved, failed = resolve_hostnames(["a.example.com"])
@@ -117,6 +141,7 @@ def test_resolve_hostnames_success(monkeypatch, caplog):
 def test_resolve_hostnames_sorts_ips(monkeypatch):
     def fake(host):
         return (host, [], ["10.0.0.5", "10.0.0.1", "10.0.0.3"])
+
     monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake)
 
     resolved, _ = resolve_hostnames(["x.example.com"])
@@ -128,6 +153,7 @@ def test_resolve_hostnames_failure(monkeypatch, caplog):
 
     def fake(host):
         raise _socket.gaierror("boom")
+
     monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake)
 
     resolved, failed = resolve_hostnames(["nope.example.com"])
@@ -147,8 +173,11 @@ def test_filter_by_env_keeps_rule_with_matching_env():
 def test_build_policy_shape_and_dns_and_deny():
     rules = [Rule(("10.0.0.1",), (443,), None, "api")]
     policy = build_policy(
-        app="myapp", env="prd", rules=rules,
-        selector={"app": "myapp"}, resolved={},
+        app="myapp",
+        env="prd",
+        rules=rules,
+        selector={"app": "myapp"},
+        resolved={},
     )
     assert policy["apiVersion"] == "projectcalico.org/v3"
     assert policy["kind"] == "NetworkPolicy"
@@ -191,7 +220,8 @@ def test_build_policy_hostname_expands_to_sorted_32s():
     resolved = {"api.example.com": ["1.2.3.5", "1.2.3.4"]}
     policy = build_policy("app", "prd", rules, {"app": "app"}, resolved)
     assert policy["spec"]["egress"][2]["destination"]["nets"] == [
-        "1.2.3.4/32", "1.2.3.5/32",
+        "1.2.3.4/32",
+        "1.2.3.5/32",
     ]
 
 
@@ -205,7 +235,11 @@ def test_build_policy_skips_rule_with_only_unresolved_hostname():
 
 def test_build_policy_multi_selector_joined_with_and():
     policy = build_policy(
-        "app", "prd", [], selector={"app": "app", "tier": "api"}, resolved={},
+        "app",
+        "prd",
+        [],
+        selector={"app": "app", "tier": "api"},
+        resolved={},
     )
     sel = policy["spec"]["selector"]
     assert 'app == "app"' in sel and 'tier == "api"' in sel and "&&" in sel
@@ -240,9 +274,11 @@ def test_write_outputs_creates_files(tmp_path):
 
 
 def test_write_outputs_is_deterministic(tmp_path):
-    policies = {"prd": build_policy("app", "prd",
-                                    [Rule(("10.0.0.1",), (443,), None, None)],
-                                    {"app": "app"}, {})}
+    policies = {
+        "prd": build_policy(
+            "app", "prd", [Rule(("10.0.0.1",), (443,), None, None)], {"app": "app"}, {}
+        )
+    }
     resolved = {"z.example.com": ["9.9.9.9"], "a.example.com": ["1.1.1.1"]}
 
     write_outputs(tmp_path, policies, resolved)
@@ -259,7 +295,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 def test_cli_end_to_end(tmp_path, monkeypatch):
     allowlist = tmp_path / "allowlist.yaml"
-    allowlist.write_text(textwrap.dedent("""
+    allowlist.write_text(
+        textwrap.dedent("""
         egress:
           - destination: 10.0.0.1
             port: 443
@@ -272,21 +309,30 @@ def test_cli_end_to_end(tmp_path, monkeypatch):
             port: 443
             protocol: http
             envs: [dev, stg, prd]
-    """))
+    """)
+    )
     out_dir = tmp_path / "out"
 
     def fake_resolve(host):
         data = {"api.example.com": ["9.9.9.9", "8.8.8.8"]}
         return (host, [], data[host])
+
     monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake_resolve)
 
     from generator.generate import main
-    rc = main([
-        "--allowlist", str(allowlist),
-        "--app", "myapp",
-        "--output-dir", str(out_dir),
-        "--envs", "dev,stg,prd",
-    ])
+
+    rc = main(
+        [
+            "--allowlist",
+            str(allowlist),
+            "--app",
+            "myapp",
+            "--output-dir",
+            str(out_dir),
+            "--envs",
+            "dev,stg,prd",
+        ]
+    )
     assert rc == 0
     for env_name in ("dev", "stg", "prd"):
         assert (out_dir / f"networkpolicy-{env_name}.yaml").exists()
@@ -295,19 +341,30 @@ def test_cli_end_to_end(tmp_path, monkeypatch):
 
 def test_cli_exit_code_2_on_dns_failure(tmp_path):
     allowlist = tmp_path / "allowlist.yaml"
-    allowlist.write_text(textwrap.dedent("""
+    allowlist.write_text(
+        textwrap.dedent("""
         egress:
           - destination: this-will-not-resolve.invalid.
             port: 443
             protocol: tcp
-    """))
+    """)
+    )
     out_dir = tmp_path / "out"
     result = subprocess.run(
-        [sys.executable, "-m", "generator.generate",
-         "--allowlist", str(allowlist),
-         "--app", "myapp",
-         "--output-dir", str(out_dir)],
-        cwd=REPO, capture_output=True, text=True,
+        [
+            sys.executable,
+            "-m",
+            "generator.generate",
+            "--allowlist",
+            str(allowlist),
+            "--app",
+            "myapp",
+            "--output-dir",
+            str(out_dir),
+        ],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 2
     assert "this-will-not-resolve.invalid." in result.stderr
@@ -316,10 +373,12 @@ def test_cli_exit_code_2_on_dns_failure(tmp_path):
 def test_generate_is_byte_deterministic(tmp_path, monkeypatch):
     def fake(host):
         return (host, [], ["9.9.9.9", "8.8.8.8"])
+
     monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake)
 
     allowlist = tmp_path / "allowlist.yaml"
-    allowlist.write_text(textwrap.dedent("""
+    allowlist.write_text(
+        textwrap.dedent("""
         egress:
           - destinations: [b.example.com, a.example.com]
             port: 443
@@ -327,14 +386,26 @@ def test_generate_is_byte_deterministic(tmp_path, monkeypatch):
           - destination: 10.0.0.1
             port: 443
             protocol: tcp
-    """))
+    """)
+    )
 
     from generator.generate import main
+
     out1 = tmp_path / "out1"
     out2 = tmp_path / "out2"
-    assert main(["--allowlist", str(allowlist), "--app", "app", "--output-dir", str(out1)]) == 0
-    assert main(["--allowlist", str(allowlist), "--app", "app", "--output-dir", str(out2)]) == 0
+    assert (
+        main(["--allowlist", str(allowlist), "--app", "app", "--output-dir", str(out1)])
+        == 0
+    )
+    assert (
+        main(["--allowlist", str(allowlist), "--app", "app", "--output-dir", str(out2)])
+        == 0
+    )
 
-    for name in ("networkpolicy-dev.yaml", "networkpolicy-stg.yaml",
-                 "networkpolicy-prd.yaml", "resolved-ips.json"):
+    for name in (
+        "networkpolicy-dev.yaml",
+        "networkpolicy-stg.yaml",
+        "networkpolicy-prd.yaml",
+        "resolved-ips.json",
+    ):
         assert (out1 / name).read_bytes() == (out2 / name).read_bytes(), name
