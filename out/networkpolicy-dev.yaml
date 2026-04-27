@@ -8,16 +8,19 @@ spec:
   types:
   - Egress
   egress:
+  # DNS (CoreDNS)
   - action: Allow
     protocol: UDP
     destination:
       ports:
       - 53
+  # DNS (CoreDNS)
   - action: Allow
     protocol: TCP
     destination:
       ports:
       - 53
+  # Redis cluster - DEV
   - action: Allow
     protocol: TCP
     destination:
@@ -25,6 +28,7 @@ spec:
       - 10.50.100.10/32
       ports:
       - 30000:30999
+  # GitHub APIs
   - action: Allow
     protocol: TCP
     destination:
@@ -36,4 +40,5 @@ spec:
       - 185.199.111.133/32
       ports:
       - 443
+  # default deny
   - action: Deny

@@ -15,6 +15,7 @@ from generator.generate import (
     filter_by_env,
     build_policy,
     write_outputs,
+    _dump_policy,
 )
 
 
@@ -194,13 +195,13 @@ def test_build_policy_shape_and_dns_and_deny():
     assert egress[1]["protocol"] == "TCP"
     assert egress[1]["destination"]["ports"] == [53]
     # Middle: our rule
-    assert egress[2] == {
-        "action": "Allow",
-        "protocol": "TCP",
-        "destination": {"nets": ["10.0.0.1/32"], "ports": [443]},
-    }
+    assert egress[2]["action"] == "Allow"
+    assert egress[2]["protocol"] == "TCP"
+    assert egress[2]["destination"] == {"nets": ["10.0.0.1/32"], "ports": [443]}
+    assert egress[2]["_comment"] == "api"
     # Last: deny
-    assert egress[-1] == {"action": "Deny"}
+    assert egress[-1]["action"] == "Deny"
+    assert egress[-1]["_comment"] == "default deny"
 
 
 def test_build_policy_cidr_preserved():
@@ -409,3 +410,14 @@ def test_generate_is_byte_deterministic(tmp_path, monkeypatch):
         "resolved-ips.json",
     ):
         assert (out1 / name).read_bytes() == (out2 / name).read_bytes(), name
+
+
+def test_dump_policy_includes_comments(tmp_path):
+    rules = [Rule(("10.0.0.1",), (443,), None, "GitHub APIs")]
+    policy = build_policy("app", "prd", rules, {"app": "app"}, {})
+    output = _dump_policy(policy)
+    assert "# DNS (CoreDNS)" in output
+    assert "# GitHub APIs" in output
+    assert "# default deny" in output
+    # _comment must not appear as a YAML key
+    assert "_comment" not in output.replace("# ", "")

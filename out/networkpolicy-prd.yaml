@@ -8,16 +8,19 @@ spec:
   types:
   - Egress
   egress:
+  # DNS (CoreDNS)
   - action: Allow
     protocol: UDP
     destination:
       ports:
       - 53
+  # DNS (CoreDNS)
   - action: Allow
     protocol: TCP
     destination:
       ports:
       - 53
+  # Kafka brokers subnet - PRD
   - action: Allow
     protocol: TCP
     destination:
@@ -25,6 +28,7 @@ spec:
       - 10.20.30.0/24
       ports:
       - 9092
+  # Redis cluster - PRD (HA)
   - action: Allow
     protocol: TCP
     destination:
@@ -34,6 +38,7 @@ spec:
       - 10.50.250.27/32
       ports:
       - 30000:30999
+  # Secure partner API gRPC mTLS
   - action: Allow
     protocol: TCP
     destination:
@@ -41,6 +46,7 @@ spec:
       - 127.0.0.1/32
       ports:
       - 50051
+  # Payment gateway mTLS
   - action: Allow
     protocol: TCP
     destination:
@@ -48,6 +54,7 @@ spec:
       - 127.0.0.1/32
       ports:
       - 8443
+  # GitHub APIs
   - action: Allow
     protocol: TCP
     destination:
@@ -59,6 +66,7 @@ spec:
       - 185.199.111.133/32
       ports:
       - 443
+  # PostgreSQL database - PRD
   - action: Allow
     protocol: TCP
     destination:
@@ -66,6 +74,7 @@ spec:
       - 172.16.20.5/32
       ports:
       - 5432
+  # Partner API - Production
   - action: Allow
     protocol: TCP
     destination:
@@ -73,4 +82,5 @@ spec:
       - 54.237.57.21/32
       ports:
       - 443
+  # default deny
   - action: Deny

@@ -179,8 +179,8 @@ def build_policy(
     resolved: dict[str, list[str]],
 ) -> dict:
     egress: list[dict] = [
-        {"action": "Allow", "protocol": "UDP", "destination": {"ports": [53]}},
-        {"action": "Allow", "protocol": "TCP", "destination": {"ports": [53]}},
+        {"_comment": "DNS (CoreDNS)", "action": "Allow", "protocol": "UDP", "destination": {"ports": [53]}},
+        {"_comment": "DNS (CoreDNS)", "action": "Allow", "protocol": "TCP", "destination": {"ports": [53]}},
     ]
 
     middle: list[dict] = []
@@ -194,6 +194,7 @@ def build_policy(
         ports = [f"{p[0]}:{p[1]}" if isinstance(p, tuple) else p for p in rule.ports]
         middle.append(
             {
+                "_comment": rule.description or ", ".join(rule.destinations),
                 "action": "Allow",
                 "protocol": "TCP",
                 "destination": {"nets": nets, "ports": ports},
@@ -208,7 +209,7 @@ def build_policy(
         )
     )
     egress.extend(middle)
-    egress.append({"action": "Deny"})
+    egress.append({"_comment": "default deny", "action": "Deny"})
 
     return {
         "apiVersion": "projectcalico.org/v3",
@@ -230,13 +231,28 @@ def write_outputs(
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     for env, policy in sorted(policies.items()):
-        (out / f"networkpolicy-{env}.yaml").write_text(
-            yaml.safe_dump(policy, sort_keys=False, default_flow_style=False)
-        )
+        (out / f"networkpolicy-{env}.yaml").write_text(_dump_policy(policy))
     sorted_resolved = {k: sorted(v) for k, v in sorted(resolved.items())}
     (out / "resolved-ips.json").write_text(
         _json.dumps(sorted_resolved, indent=2, sort_keys=True) + "\n"
     )
+
+
+def _dump_policy(policy: dict) -> str:
+    """Serialize a NetworkPolicy dict to YAML with # comments on each egress rule."""
+    egress = policy["spec"]["egress"]
+    skeleton = {**policy, "spec": {**policy["spec"], "egress": None}}
+    base = yaml.safe_dump(skeleton, sort_keys=False, default_flow_style=False)
+    base = base.replace("  egress: null\n", "  egress:\n")
+    parts = [base.rstrip("\n")]
+    for rule in egress:
+        rule = rule.copy()
+        comment = rule.pop("_comment", None)
+        if comment:
+            parts.append(f"  # {comment}")
+        for line in yaml.safe_dump([rule], sort_keys=False, default_flow_style=False).rstrip("\n").split("\n"):
+            parts.append(f"  {line}")
+    return "\n".join(parts) + "\n"
 
 
 def _parse_selectors(items: list[str] | None, app: str) -> dict[str, str]:
