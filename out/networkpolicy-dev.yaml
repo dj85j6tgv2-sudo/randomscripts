@@ -1,10 +1,10 @@
-apiVersion: crd.projectcalico.org/v1
+apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: python-app-egress
-  namespace: python-app-dev
+  name: myapp-egress
+  namespace: myapp-dev
   annotations:
-    egress.policy/rules: 'api.github.com [140.82.114.6], raw.githubusercontent.com
+    egress.policy/rules: 'api.github.com [140.82.121.5], raw.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133], gist.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133]:443 - GitHub
       APIs
@@ -28,41 +28,38 @@ metadata:
 
       jaeger-collector.tracing.internal:14250 - Jaeger tracing collector gRPC'
 spec:
-  selector: app == "python-app"
-  types:
+  podSelector:
+    matchLabels:
+      app: myapp
+  policyTypes:
   - Egress
   egress:
-  # DNS (CoreDNS)
-  - action: Allow
-    protocol: UDP
-    destination:
-      ports:
-      - 53
-  # DNS (CoreDNS)
-  - action: Allow
-    protocol: TCP
-    destination:
-      ports:
-      - 53
-  # Redis cluster - DEV
-  - action: Allow
-    protocol: TCP
-    destination:
-      nets:
-      - 10.50.100.10/32
-      ports:
-      - 30000:30999
+  - ports:
+    - port: 53
+      protocol: UDP
+  - ports:
+    - port: 53
+      protocol: TCP
   # GitHub APIs
-  - action: Allow
-    protocol: TCP
-    destination:
-      nets:
-      - 140.82.114.6/32
-      - 185.199.108.133/32
-      - 185.199.109.133/32
-      - 185.199.110.133/32
-      - 185.199.111.133/32
-      ports:
-      - 443
-  # default deny
-  - action: Deny
+  - to:
+    - ipBlock:
+        cidr: 140.82.121.5/32
+    - ipBlock:
+        cidr: 185.199.108.133/32
+    - ipBlock:
+        cidr: 185.199.109.133/32
+    - ipBlock:
+        cidr: 185.199.110.133/32
+    - ipBlock:
+        cidr: 185.199.111.133/32
+    ports:
+    - port: 443
+      protocol: TCP
+  # Redis cluster - DEV
+  - to:
+    - ipBlock:
+        cidr: 10.50.100.10/32
+    ports:
+    - port: 30000
+      endPort: 30999
+      protocol: TCP

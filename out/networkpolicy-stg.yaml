@@ -1,10 +1,10 @@
-apiVersion: crd.projectcalico.org/v1
+apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: python-app-egress
-  namespace: python-app-stg
+  name: myapp-egress
+  namespace: myapp-stg
   annotations:
-    egress.policy/rules: 'api.github.com [140.82.114.6], raw.githubusercontent.com
+    egress.policy/rules: 'api.github.com [140.82.121.5], raw.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133], gist.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133]:443 - GitHub
       APIs
@@ -34,65 +34,59 @@ metadata:
 
       payment-gateway.partner.com [127.0.0.1]:8443 - Payment gateway mTLS'
 spec:
-  selector: app == "python-app"
-  types:
+  podSelector:
+    matchLabels:
+      app: myapp
+  policyTypes:
   - Egress
   egress:
-  # DNS (CoreDNS)
-  - action: Allow
-    protocol: UDP
-    destination:
-      ports:
-      - 53
-  # DNS (CoreDNS)
-  - action: Allow
-    protocol: TCP
-    destination:
-      ports:
-      - 53
-  # Redis cluster - STG
-  - action: Allow
-    protocol: TCP
-    destination:
-      nets:
-      - 10.50.200.10/32
-      ports:
-      - 30000:30999
-  # Payment gateway mTLS
-  - action: Allow
-    protocol: TCP
-    destination:
-      nets:
-      - 127.0.0.1/32
-      ports:
-      - 8443
+  - ports:
+    - port: 53
+      protocol: UDP
+  - ports:
+    - port: 53
+      protocol: TCP
   # GitHub APIs
-  - action: Allow
-    protocol: TCP
-    destination:
-      nets:
-      - 140.82.114.6/32
-      - 185.199.108.133/32
-      - 185.199.109.133/32
-      - 185.199.110.133/32
-      - 185.199.111.133/32
-      ports:
-      - 443
-  # PostgreSQL database - STG
-  - action: Allow
-    protocol: TCP
-    destination:
-      nets:
-      - 172.16.10.5/32
-      ports:
-      - 5432
+  - to:
+    - ipBlock:
+        cidr: 140.82.121.5/32
+    - ipBlock:
+        cidr: 185.199.108.133/32
+    - ipBlock:
+        cidr: 185.199.109.133/32
+    - ipBlock:
+        cidr: 185.199.110.133/32
+    - ipBlock:
+        cidr: 185.199.111.133/32
+    ports:
+    - port: 443
+      protocol: TCP
   # Partner API - Staging
-  - action: Allow
-    protocol: TCP
-    destination:
-      nets:
-      - 54.237.57.21/32
-      ports:
-      - 443
-  # default deny
-  - action: Deny
+  - to:
+    - ipBlock:
+        cidr: 54.237.57.21/32
+    ports:
+    - port: 443
+      protocol: TCP
+  # Redis cluster - STG
+  - to:
+    - ipBlock:
+        cidr: 10.50.200.10/32
+    ports:
+    - port: 30000
+      endPort: 30999
+      protocol: TCP
+  # PostgreSQL database - STG
+  - to:
+    - ipBlock:
+        cidr: 172.16.10.5/32
+    ports:
+    - port: 5432
+      protocol: TCP
+  # Payment gateway mTLS
+  - to:
+    - ipBlock:
+        cidr: 127.0.0.1/32
+    ports:
+    - port: 8443
+      protocol: TCP
