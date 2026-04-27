@@ -154,19 +154,25 @@ def load_allowlist(path: Path | str) -> list[Rule]:
     return rules
 
 
-def _rule_annotation_line(rule: Rule) -> str:
+def _rule_annotation_line(rule: Rule, resolved: dict[str, list[str]]) -> str:
     ports = ", ".join(
         f"{p[0]}-{p[1]}" if isinstance(p, tuple) else str(p) for p in rule.ports
     )
-    dests = ", ".join(rule.destinations)
-    label = f"{dests}:{ports}"
+    dest_parts = []
+    for d in rule.destinations:
+        kind, _ = classify(d)
+        if kind == "hostname" and d in resolved:
+            dest_parts.append(f"{d} [{', '.join(resolved[d])}]")
+        else:
+            dest_parts.append(d)
+    label = f"{', '.join(dest_parts)}:{ports}"
     if rule.description:
         label += f" - {rule.description}"
     return label
 
 
-def _build_annotations(rules: list[Rule]) -> dict[str, str]:
-    lines = [_rule_annotation_line(r) for r in rules]
+def _build_annotations(rules: list[Rule], resolved: dict[str, list[str]]) -> dict[str, str]:
+    lines = [_rule_annotation_line(r, resolved) for r in rules]
     return {"egress.policy/rules": "\n".join(lines)} if lines else {}
 
 
@@ -221,7 +227,7 @@ def build_policy(
     resolved: dict[str, list[str]],
     fmt: str = "calico",
 ) -> dict:
-    annotations = _build_annotations(rules)
+    annotations = _build_annotations(rules, resolved)
     if fmt == "kubernetes":
         egress = _build_k8s_egress_rules(rules, resolved)
         return {

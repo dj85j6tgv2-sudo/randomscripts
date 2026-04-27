@@ -460,9 +460,12 @@ def test_build_policy_annotations_visible_in_metadata():
     rules = [
         Rule(("10.0.0.1",), (443,), None, "GitHub APIs"),
         Rule(("172.16.0.0/16",), ((30000, 30999),), None, None),
+        Rule(("api.example.com",), (443,), None, "External API"),
     ]
+    resolved = {"api.example.com": ["1.2.3.4", "1.2.3.5"]}
     for fmt in ("calico", "kubernetes"):
-        policy = build_policy("app", "prd", rules, {"app": "app"}, {}, fmt=fmt)
+        policy = build_policy("app", "prd", rules, {"app": "app"}, resolved, fmt=fmt)
         ann = policy["metadata"]["annotations"]["egress.policy/rules"]
         assert "10.0.0.1:443 - GitHub APIs" in ann
         assert "172.16.0.0/16:30000-30999" in ann
+        assert "api.example.com [1.2.3.4, 1.2.3.5]:443 - External API" in ann
