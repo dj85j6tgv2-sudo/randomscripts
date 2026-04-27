@@ -212,7 +212,7 @@ def build_policy(
     egress.append({"_comment": "default deny", "action": "Deny"})
 
     return {
-        "apiVersion": "projectcalico.org/v3",
+        "apiVersion": "crd.projectcalico.org/v1",
         "kind": "NetworkPolicy",
         "metadata": {"name": f"{app}-egress", "namespace": f"{app}-{env}"},
         "spec": {

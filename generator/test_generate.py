@@ -180,7 +180,7 @@ def test_build_policy_shape_and_dns_and_deny():
         selector={"app": "myapp"},
         resolved={},
     )
-    assert policy["apiVersion"] == "projectcalico.org/v3"
+    assert policy["apiVersion"] == "crd.projectcalico.org/v1"
     assert policy["kind"] == "NetworkPolicy"
     assert policy["metadata"]["name"] == "myapp-egress"
     assert policy["metadata"]["namespace"] == "myapp-prd"
