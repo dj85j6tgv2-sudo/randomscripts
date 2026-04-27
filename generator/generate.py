@@ -154,6 +154,22 @@ def load_allowlist(path: Path | str) -> list[Rule]:
     return rules
 
 
+def _rule_annotation_line(rule: Rule) -> str:
+    ports = ", ".join(
+        f"{p[0]}-{p[1]}" if isinstance(p, tuple) else str(p) for p in rule.ports
+    )
+    dests = ", ".join(rule.destinations)
+    label = f"{dests}:{ports}"
+    if rule.description:
+        label += f" - {rule.description}"
+    return label
+
+
+def _build_annotations(rules: list[Rule]) -> dict[str, str]:
+    lines = [_rule_annotation_line(r) for r in rules]
+    return {"egress.policy/rules": "\n".join(lines)} if lines else {}
+
+
 def _nets_for_destination(dest: str, resolved: dict[str, list[str]]) -> list[str]:
     kind, value = classify(dest)
     if kind == "wildcard":
@@ -205,12 +221,13 @@ def build_policy(
     resolved: dict[str, list[str]],
     fmt: str = "calico",
 ) -> dict:
+    annotations = _build_annotations(rules)
     if fmt == "kubernetes":
         egress = _build_k8s_egress_rules(rules, resolved)
         return {
             "apiVersion": "networking.k8s.io/v1",
             "kind": "NetworkPolicy",
-            "metadata": {"name": f"{app}-egress", "namespace": f"{app}-{env}"},
+            "metadata": {"name": f"{app}-egress", "namespace": f"{app}-{env}", "annotations": annotations},
             "spec": {
                 "podSelector": {"matchLabels": selector},
                 "policyTypes": ["Egress"],
@@ -255,7 +272,7 @@ def build_policy(
     return {
         "apiVersion": "crd.projectcalico.org/v1",
         "kind": "NetworkPolicy",
-        "metadata": {"name": f"{app}-egress", "namespace": f"{app}-{env}"},
+        "metadata": {"name": f"{app}-egress", "namespace": f"{app}-{env}", "annotations": annotations},
         "spec": {
             "selector": " && ".join(
                 f'{k} == "{v}"' for k, v in sorted(selector.items())

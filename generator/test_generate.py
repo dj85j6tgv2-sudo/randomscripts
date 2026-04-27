@@ -454,3 +454,15 @@ def test_build_policy_default_format_is_calico():
     rules = [Rule(("10.0.0.1",), (443,), None, None)]
     policy = build_policy("app", "prd", rules, {"app": "app"}, {})
     assert policy["apiVersion"] == "crd.projectcalico.org/v1"
+
+
+def test_build_policy_annotations_visible_in_metadata():
+    rules = [
+        Rule(("10.0.0.1",), (443,), None, "GitHub APIs"),
+        Rule(("172.16.0.0/16",), ((30000, 30999),), None, None),
+    ]
+    for fmt in ("calico", "kubernetes"):
+        policy = build_policy("app", "prd", rules, {"app": "app"}, {}, fmt=fmt)
+        ann = policy["metadata"]["annotations"]["egress.policy/rules"]
+        assert "10.0.0.1:443 - GitHub APIs" in ann
+        assert "172.16.0.0/16:30000-30999" in ann
