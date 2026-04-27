@@ -1,0 +1,85 @@
+name: refresh-egress-policies
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "egress-allowlist.yaml"
+      - "generator/**"
+      - ".github/workflows/refresh-egress-policies.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r generator/requirements.txt
+
+      - name: Run tests
+        run: python -m pytest generator/ -v
+
+      - name: Generate NetworkPolicies
+        id: generate
+        run: |
+          set +e
+          python -m generator.generate \
+            --allowlist egress-allowlist.yaml \
+            --app python-app \
+            --output-dir out/ \
+            2> generate.log
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          cat generate.log
+
+      - name: Surface unresolved hostnames
+        if: steps.generate.outputs.rc == '2'
+        run: |
+          {
+            echo "## Unresolved hostnames"
+            echo ""
+            echo '```'
+            grep -E "Unresolved hostnames|could not be resolved" generate.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail on wildcard / config error
+        if: steps.generate.outputs.rc == '1'
+        run: |
+          echo "::error::Generator config error. See logs."
+          exit 1
+
+      - name: Commit refreshed policies
+        if: steps.generate.outputs.rc == '0' || steps.generate.outputs.rc == '2'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet out/; then
+            echo "No changes."
+          else
+            git add out/
+            git commit -m "chore: refresh egress IPs"
+            git push
+          fi
+
+      # TODO: apply to clusters
+      # - name: kubectl apply dev
+      #   run: kubectl --context=dev apply -f out/networkpolicy-dev.yaml
+      # - name: kubectl apply stg
+      #   run: kubectl --context=stg apply -f out/networkpolicy-stg.yaml
+      # - name: kubectl apply prd
+      #   run: kubectl --context=prd apply -f out/networkpolicy-prd.yaml
+
+      - name: Fail job if DNS resolution had warnings
+        if: steps.generate.outputs.rc == '2'
+        run: exit 1
