@@ -171,13 +171,54 @@ def _nets_for_destination(dest: str, resolved: dict[str, list[str]]) -> list[str
     return [f"{ip}/32" for ip in ips]
 
 
+def _build_k8s_egress_rules(rules: list[Rule], resolved: dict[str, list[str]]) -> list[dict]:
+    egress: list[dict] = [
+        {"ports": [{"port": 53, "protocol": "UDP"}]},
+        {"ports": [{"port": 53, "protocol": "TCP"}]},
+    ]
+    for rule in rules:
+        nets: list[str] = []
+        for dest in rule.destinations:
+            nets.extend(_nets_for_destination(dest, resolved))
+        if not nets:
+            continue
+        nets = sorted(set(nets))
+        ports = []
+        for p in rule.ports:
+            if isinstance(p, tuple):
+                ports.append({"port": p[0], "endPort": p[1], "protocol": "TCP"})
+            else:
+                ports.append({"port": p, "protocol": "TCP"})
+        egress.append({
+            "_comment": rule.description or ", ".join(rule.destinations),
+            "to": [{"ipBlock": {"cidr": net}} for net in nets],
+            "ports": ports,
+        })
+    return egress
+
+
 def build_policy(
     app: str,
     env: str,
     rules: list[Rule],
     selector: dict[str, str],
     resolved: dict[str, list[str]],
+    fmt: str = "calico",
 ) -> dict:
+    if fmt == "kubernetes":
+        egress = _build_k8s_egress_rules(rules, resolved)
+        return {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {"name": f"{app}-egress", "namespace": f"{app}-{env}"},
+            "spec": {
+                "podSelector": {"matchLabels": selector},
+                "policyTypes": ["Egress"],
+                "egress": egress,
+            },
+        }
+
+    # Calico format (default)
     egress: list[dict] = [
         {"_comment": "DNS (CoreDNS)", "action": "Allow", "protocol": "UDP", "destination": {"ports": [53]}},
         {"_comment": "DNS (CoreDNS)", "action": "Allow", "protocol": "TCP", "destination": {"ports": [53]}},
@@ -283,6 +324,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="ENV,...",
         help="Comma-separated environments.",
     )
+    p.add_argument(
+        "--format",
+        choices=["calico", "kubernetes"],
+        default="calico",
+        help="Output format: calico (crd.projectcalico.org/v1) or kubernetes (networking.k8s.io/v1).",
+    )
     args = p.parse_args(argv)
     try:
         rules = load_allowlist(args.allowlist)
@@ -298,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         policies = {
             env: build_policy(
-                args.app, env, filter_by_env(rules, env), selector, resolved
+                args.app, env, filter_by_env(rules, env), selector, resolved, args.format
             )
             for env in envs
         }

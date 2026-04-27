@@ -421,3 +421,36 @@ def test_dump_policy_includes_comments(tmp_path):
     assert "# default deny" in output
     # _comment must not appear as a YAML key
     assert "_comment" not in output.replace("# ", "")
+
+
+def test_build_policy_kubernetes_format_shape(monkeypatch):
+    rules = [Rule(("10.0.0.1",), (443,), None, "api")]
+    policy = build_policy(
+        app="myapp", env="prd", rules=rules,
+        selector={"app": "myapp"}, resolved={}, fmt="kubernetes",
+    )
+    assert policy["apiVersion"] == "networking.k8s.io/v1"
+    assert policy["spec"]["podSelector"] == {"matchLabels": {"app": "myapp"}}
+    assert policy["spec"]["policyTypes"] == ["Egress"]
+    egress = policy["spec"]["egress"]
+    # DNS rules (no "to" field)
+    assert egress[0] == {"ports": [{"port": 53, "protocol": "UDP"}]}
+    assert egress[1] == {"ports": [{"port": 53, "protocol": "TCP"}]}
+    # Our rule
+    assert egress[2]["to"] == [{"ipBlock": {"cidr": "10.0.0.1/32"}}]
+    assert egress[2]["ports"] == [{"port": 443, "protocol": "TCP"}]
+    # No Deny rule
+    assert all(r.get("action") != "Deny" for r in egress)
+
+
+def test_build_policy_kubernetes_port_range(monkeypatch):
+    rules = [Rule(("10.0.0.1",), ((30000, 30999),), None, None)]
+    policy = build_policy("app", "prd", rules, {"app": "app"}, {}, fmt="kubernetes")
+    egress = policy["spec"]["egress"]
+    assert egress[2]["ports"] == [{"port": 30000, "endPort": 30999, "protocol": "TCP"}]
+
+
+def test_build_policy_default_format_is_calico():
+    rules = [Rule(("10.0.0.1",), (443,), None, None)]
+    policy = build_policy("app", "prd", rules, {"app": "app"}, {})
+    assert policy["apiVersion"] == "crd.projectcalico.org/v1"
