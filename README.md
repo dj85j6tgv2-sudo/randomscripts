@@ -425,3 +425,61 @@ curl http://localhost:9901/config_dump | jq .
 - DNS resolution happens at deploy time - if IPs change, redeploy is needed
 - HTTP proxy requires applications to set `HTTP_PROXY`/`HTTPS_PROXY`
 - Transparent proxy requires iptables setup (init container in Kubernetes)
+
+---
+
+## Calico NetworkPolicy Egress Generator
+
+**What this is.** A Python generator that turns `egress-allowlist.yaml` (the source of truth) into `projectcalico.org/v3` `NetworkPolicy` resources, one per environment, enforced by Calico OSS at L3/L4. This is replacing the Envoy sidecar + iptables init container model, which kept breaking for protocol-specific reasons (gRPC codec, mTLS cert stripping, ClickHouse streaming).
+
+### How to add a destination
+
+1. Edit `egress-allowlist.yaml`. Add a rule following one of the formats below.
+2. Open a PR. CI runs the generator on merge and commits refreshed `out/*.yaml` + `out/resolved-ips.json`.
+3. The `kubectl apply` step is currently a TODO in the workflow — apply manually or wire it up per cluster.
+
+### Supported destination types
+
+- **IP** (single address) — emitted as `/32`.
+- **CIDR** (e.g. `10.20.30.0/24`) — preserved as-is.
+- **Hostname** — resolved daily by CI via `socket.gethostbyname_ex()` and pinned as one or more `/32` rules. Results recorded in `out/resolved-ips.json`.
+- **Port** (single int) or **port range** (`{start, end}` → `"start:end"`).
+- **Protocol**: `http`, `https`, `tcp`, `grpc` — all map to TCP in Calico.
+
+### Limitations (by design)
+
+- **No FQDN-based allowlisting.** Calico OSS has no FQDN rules. We pin IPs daily.
+- **No wildcards enforced.** Wildcard destinations like `*.example.com` are logged as warnings and skipped — they cannot be enforced at L3/L4.
+- **No Layer 7.** No Host-header matching, no path routing, no mTLS termination. This is the whole point of moving off Envoy.
+- **No GlobalNetworkPolicy / DNS policies / FQDN rules** (Calico Enterprise only).
+
+### Debugging "app can't reach destination X"
+
+1. Is `X` in `egress-allowlist.yaml` with the correct env?
+2. For hostnames: does `out/resolved-ips.json` show the IP your app actually tried to reach? (Check `kubectl logs` / `tcpdump`.)
+3. Do the app's pod labels match the NetworkPolicy selector? Default is `app=<app-name>`; override with `--selector key=value` at generation time.
+4. Is the policy applied in the right namespace (`<app>-<env>`)?
+
+### Cross-cluster notes
+
+Some entries in the historical allowlist use `*.svc.cluster.local` names from other clusters (e.g. Dagster runs in its own cluster). From this cluster's perspective those are *external* targets. If `socket.gethostbyname_ex()` from the CI runner can't resolve them, replace with the target cluster's LoadBalancer/NodePort IP.
+
+### Migration status
+
+| App | Status | Notes |
+|---|---|---|
+| _tbd_ | not started | — |
+
+### Local use
+
+```bash
+pip install -r generator/requirements.txt
+python -m generator.generate \
+  --allowlist egress-allowlist.yaml \
+  --app my-app \
+  --selector app=my-app \
+  --output-dir out/ \
+  --envs dev,stg,prd
+```
+
+Exit codes: `0` clean · `1` config error · `2` one or more hostnames failed to resolve.
