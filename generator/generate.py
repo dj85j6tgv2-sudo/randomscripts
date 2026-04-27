@@ -213,13 +213,9 @@ def write_outputs(out_dir: Path | str, policies: dict[str, dict],
 def _parse_selectors(items: list[str] | None, app: str) -> dict[str, str]:
     if not items:
         return {"app": app}
-    out: dict[str, str] = {}
-    for item in items:
-        if "=" not in item:
-            raise ConfigError(f"--selector must be key=value, got {item!r}")
-        k, v = item.split("=", 1)
-        out[k.strip()] = v.strip()
-    return out
+    if bad := [i for i in items if "=" not in i]:
+        raise ConfigError(f"--selector must be key=value, got {bad!r}")
+    return {k.strip(): v.strip() for i in items for k, v in [i.split("=", 1)]}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -228,33 +224,26 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--allowlist", required=True, type=Path)
     p.add_argument("--app", required=True)
     p.add_argument("--output-dir", required=True, type=Path)
-    p.add_argument("--selector", action="append",
-                   help="key=value (repeatable). Default: app=<--app>.")
-    p.add_argument("--envs", default="dev,stg,prd",
-                   help="Comma-separated list of environments.")
+    p.add_argument("--selector", action="append", metavar="KEY=VAL",
+                   help="Selector label (repeatable). Default: app=<--app>.")
+    p.add_argument("--envs", default="dev,stg,prd", metavar="ENV,...",
+                   help="Comma-separated environments.")
     args = p.parse_args(argv)
-
     try:
         rules = load_allowlist(args.allowlist)
         selector = _parse_selectors(args.selector, args.app)
     except ConfigError as exc:
         log.error("%s", exc)
         return 1
-
     hostnames = [d for r in rules for d in r.destinations if classify(d)[0] == "hostname"]
     resolved, failed = resolve_hostnames(hostnames)
-
     envs = [e.strip() for e in args.envs.split(",") if e.strip()]
-    policies: dict[str, dict] = {}
     try:
-        for env in envs:
-            policies[env] = build_policy(args.app, env, filter_by_env(rules, env), selector, resolved)
+        policies = {env: build_policy(args.app, env, filter_by_env(rules, env), selector, resolved) for env in envs}
     except ConfigError as exc:
         log.error("%s", exc)
         return 1
-
     write_outputs(args.output_dir, policies, resolved)
-
     if failed:
         log.error("Unresolved hostnames: %s", ", ".join(failed))
         return 2
