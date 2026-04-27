@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json as _json
 import logging
 import socket
 from dataclasses import dataclass
@@ -191,3 +192,17 @@ def build_policy(
             "egress": egress,
         },
     }
+
+
+def write_outputs(out_dir: Path | str, policies: dict[str, dict],
+                  resolved: dict[str, list[str]]) -> None:
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for env, policy in sorted(policies.items()):
+        (out / f"networkpolicy-{env}.yaml").write_text(
+            yaml.safe_dump(policy, sort_keys=False, default_flow_style=False)
+        )
+    sorted_resolved = {k: sorted(v) for k, v in sorted(resolved.items())}
+    (out / "resolved-ips.json").write_text(
+        _json.dumps(sorted_resolved, indent=2, sort_keys=True) + "\n"
+    )

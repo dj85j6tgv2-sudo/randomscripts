@@ -1,9 +1,10 @@
+import json
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from generator.generate import Rule, load_allowlist, ConfigError, classify, resolve_hostnames, filter_by_env, build_policy
+from generator.generate import Rule, load_allowlist, ConfigError, classify, resolve_hostnames, filter_by_env, build_policy, write_outputs
 
 
 def write_yaml(tmp_path: Path, body: str) -> Path:
@@ -205,3 +206,43 @@ def test_build_policy_multi_selector_joined_with_and():
     )
     sel = policy["spec"]["selector"]
     assert 'app == "app"' in sel and 'tier == "api"' in sel and "&&" in sel
+
+
+def test_build_policy_wildcard_destination_raises():
+    rules = [Rule(("*.example.com",), (443,), None, None)]
+    with pytest.raises(ConfigError):
+        build_policy("app", "prd", rules, {"app": "app"}, {})
+
+
+def test_write_outputs_creates_files(tmp_path):
+    policies = {
+        "dev": build_policy("app", "dev", [], {"app": "app"}, {}),
+        "prd": build_policy("app", "prd", [], {"app": "app"}, {}),
+    }
+    resolved = {"api.example.com": ["1.2.3.4"]}
+    write_outputs(tmp_path, policies, resolved)
+
+    for env in ("dev", "prd"):
+        path = tmp_path / f"networkpolicy-{env}.yaml"
+        assert path.exists()
+        text = path.read_text()
+        assert "kind: NetworkPolicy" in text
+        assert f"namespace: app-{env}" in text
+
+    data = json.loads((tmp_path / "resolved-ips.json").read_text())
+    assert data == {"api.example.com": ["1.2.3.4"]}
+
+
+def test_write_outputs_is_deterministic(tmp_path):
+    policies = {"prd": build_policy("app", "prd",
+                                    [Rule(("10.0.0.1",), (443,), None, None)],
+                                    {"app": "app"}, {})}
+    resolved = {"z.example.com": ["9.9.9.9"], "a.example.com": ["1.1.1.1"]}
+
+    write_outputs(tmp_path, policies, resolved)
+    first_yaml = (tmp_path / "networkpolicy-prd.yaml").read_bytes()
+    first_json = (tmp_path / "resolved-ips.json").read_bytes()
+
+    write_outputs(tmp_path, policies, resolved)
+    assert (tmp_path / "networkpolicy-prd.yaml").read_bytes() == first_yaml
+    assert (tmp_path / "resolved-ips.json").read_bytes() == first_json
