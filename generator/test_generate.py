@@ -308,3 +308,30 @@ def test_cli_exit_code_2_on_dns_failure(tmp_path):
     )
     assert result.returncode == 2
     assert "this-will-not-resolve.invalid." in result.stderr
+
+
+def test_generate_is_byte_deterministic(tmp_path, monkeypatch):
+    def fake(host):
+        return (host, [], ["9.9.9.9", "8.8.8.8"])
+    monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake)
+
+    allowlist = tmp_path / "allowlist.yaml"
+    allowlist.write_text(textwrap.dedent("""
+        egress:
+          - destinations: [b.example.com, a.example.com]
+            port: 443
+            protocol: http
+          - destination: 10.0.0.1
+            port: 443
+            protocol: tcp
+    """))
+
+    from generator.generate import main
+    out1 = tmp_path / "out1"
+    out2 = tmp_path / "out2"
+    assert main(["--allowlist", str(allowlist), "--app", "app", "--output-dir", str(out1)]) == 0
+    assert main(["--allowlist", str(allowlist), "--app", "app", "--output-dir", str(out2)]) == 0
+
+    for name in ("networkpolicy-dev.yaml", "networkpolicy-stg.yaml",
+                 "networkpolicy-prd.yaml", "resolved-ips.json"):
+        assert (out1 / name).read_bytes() == (out2 / name).read_bytes(), name
