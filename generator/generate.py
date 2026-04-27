@@ -141,7 +141,11 @@ def load_allowlist(path: Path | str) -> list[Rule]:
 def _nets_for_destination(dest: str, resolved: dict[str, list[str]]) -> list[str]:
     kind, value = classify(dest)
     if kind == "wildcard":
-        raise ConfigError(f"wildcard {value!r} not supported by Calico OSS; use explicit hostnames or a CIDR.")
+        log.warning(
+            "Wildcard %r cannot be enforced by Calico OSS (no hostname-header matching); skipping.",
+            value,
+        )
+        return []
     if kind == "cidr":
         return [value]
     if kind == "ip":

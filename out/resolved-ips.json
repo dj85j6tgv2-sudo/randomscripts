@@ -1,0 +1,29 @@
+{
+  "api.github.com": [
+    "140.82.121.6"
+  ],
+  "gist.githubusercontent.com": [
+    "185.199.108.133",
+    "185.199.109.133",
+    "185.199.110.133",
+    "185.199.111.133"
+  ],
+  "partner-api-staging.external.com": [
+    "54.237.57.21"
+  ],
+  "partner-api.external.com": [
+    "54.237.57.21"
+  ],
+  "payment-gateway.partner.com": [
+    "127.0.0.1"
+  ],
+  "raw.githubusercontent.com": [
+    "185.199.108.133",
+    "185.199.109.133",
+    "185.199.110.133",
+    "185.199.111.133"
+  ],
+  "secure-api.partner.com": [
+    "127.0.0.1"
+  ]
+}

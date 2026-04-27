@@ -211,10 +211,13 @@ def test_build_policy_multi_selector_joined_with_and():
     assert 'app == "app"' in sel and 'tier == "api"' in sel and "&&" in sel
 
 
-def test_build_policy_wildcard_destination_raises():
+def test_build_policy_wildcard_destination_skipped():
+    """Wildcard destinations are now skipped with a warning instead of raising."""
     rules = [Rule(("*.example.com",), (443,), None, None)]
-    with pytest.raises(ConfigError):
-        build_policy("app", "prd", rules, {"app": "app"}, {})
+    policy = build_policy("app", "prd", rules, {"app": "app"}, {})
+    # Only DNS allows + deny remain (wildcard rule omitted)
+    actions = [r["action"] for r in policy["spec"]["egress"]]
+    assert actions == ["Allow", "Allow", "Deny"]
 
 
 def test_write_outputs_creates_files(tmp_path):

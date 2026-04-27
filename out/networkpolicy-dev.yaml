@@ -1,0 +1,39 @@
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: python-app-egress
+  namespace: python-app-dev
+spec:
+  selector: app == "python-app"
+  types:
+  - Egress
+  egress:
+  - action: Allow
+    protocol: UDP
+    destination:
+      ports:
+      - 53
+  - action: Allow
+    protocol: TCP
+    destination:
+      ports:
+      - 53
+  - action: Allow
+    protocol: TCP
+    destination:
+      nets:
+      - 10.50.100.10/32
+      ports:
+      - 30000:30999
+  - action: Allow
+    protocol: TCP
+    destination:
+      nets:
+      - 140.82.121.6/32
+      - 185.199.108.133/32
+      - 185.199.109.133/32
+      - 185.199.110.133/32
+      - 185.199.111.133/32
+      ports:
+      - 443
+  - action: Deny
