@@ -3,6 +3,40 @@ kind: NetworkPolicy
 metadata:
   name: python-app-egress
   namespace: python-app-prd
+  annotations:
+    egress.policy/rules: 'api.github.com, raw.githubusercontent.com, gist.githubusercontent.com:443
+      - GitHub APIs
+
+      internal-api.corp.local, internal-api-legacy.corp.local, api.corp.local:80 -
+      Internal REST API - PRD (multiple endpoints)
+
+      partner-api.external.com:443 - Partner API - Production
+
+      *.monitoring.internal:443 - All monitoring subdomains (Grafana, Prometheus,
+      etc)
+
+      redis-prd-master.internal, redis-prd-replica-1.internal, redis-prd-replica-2.internal,
+      10.50.250.25, 10.50.250.26, 10.50.250.27:30000-30999 - Redis cluster - PRD (HA)
+
+      kafka-prd-1.internal.corp, kafka-prd-2.internal.corp, kafka-prd-3.internal.corp:9093
+      - Kafka cluster - PRD
+
+      prometheus.monitoring.internal:9090 - Prometheus metrics endpoint
+
+      jaeger-collector.tracing.internal:14250 - Jaeger tracing collector
+
+      10.20.30.0/24:9092 - Kafka brokers subnet - PRD
+
+      172.16.20.5:5432 - PostgreSQL database - PRD
+
+      dagster-code-server-1.dagster.svc.cluster.local, dagster-code-server-2.dagster.svc.cluster.local:4266
+      - Dagster code servers gRPC - PRD
+
+      jaeger-collector.tracing.internal:14250 - Jaeger tracing collector gRPC
+
+      payment-gateway.partner.com:8443 - Payment gateway mTLS
+
+      secure-api.partner.com:50051 - Secure partner API gRPC mTLS'
 spec:
   selector: app == "python-app"
   types:
@@ -59,7 +93,7 @@ spec:
     protocol: TCP
     destination:
       nets:
-      - 140.82.112.6/32
+      - 140.82.114.6/32
       - 185.199.108.133/32
       - 185.199.109.133/32
       - 185.199.110.133/32

@@ -3,6 +3,34 @@ kind: NetworkPolicy
 metadata:
   name: python-app-egress
   namespace: python-app-stg
+  annotations:
+    egress.policy/rules: 'api.github.com, raw.githubusercontent.com, gist.githubusercontent.com:443
+      - GitHub APIs
+
+      internal-api-stg.corp.local:80 - Internal REST API - STG
+
+      partner-api-staging.external.com:443 - Partner API - Staging
+
+      *.monitoring.internal:443 - All monitoring subdomains (Grafana, Prometheus,
+      etc)
+
+      redis-stg-1.internal, redis-stg-2.internal, 10.50.200.10:30000-30999 - Redis
+      cluster - STG
+
+      kafka-stg.internal.corp:9093 - Kafka cluster - STG
+
+      prometheus.monitoring.internal:9090 - Prometheus metrics endpoint
+
+      jaeger-collector.tracing.internal:14250 - Jaeger tracing collector
+
+      172.16.10.5:5432 - PostgreSQL database - STG
+
+      dagster-code-server.dagster.svc.cluster.local:4266 - Dagster code server gRPC
+      - DEV/STG
+
+      jaeger-collector.tracing.internal:14250 - Jaeger tracing collector gRPC
+
+      payment-gateway.partner.com:8443 - Payment gateway mTLS'
 spec:
   selector: app == "python-app"
   types:
@@ -41,7 +69,7 @@ spec:
     protocol: TCP
     destination:
       nets:
-      - 140.82.112.6/32
+      - 140.82.114.6/32
       - 185.199.108.133/32
       - 185.199.109.133/32
       - 185.199.110.133/32
