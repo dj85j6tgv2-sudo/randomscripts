@@ -1,10 +1,10 @@
-apiVersion: networking.k8s.io/v1
+apiVersion: crd.projectcalico.org/v1
 kind: NetworkPolicy
 metadata:
-  name: myapp-egress
-  namespace: myapp-dev
+  name: python-app-egress
+  namespace: python-app-dev
   annotations:
-    egress.policy/rules: 'api.github.com [140.82.121.5], raw.githubusercontent.com
+    egress.policy/rules: 'api.github.com [140.82.112.6], raw.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133], gist.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133]:443 - GitHub
       APIs
@@ -28,38 +28,41 @@ metadata:
 
       jaeger-collector.tracing.internal:14250 - Jaeger tracing collector gRPC'
 spec:
-  podSelector:
-    matchLabels:
-      app: myapp
-  policyTypes:
+  selector: app == "python-app"
+  types:
   - Egress
   egress:
-  - ports:
-    - port: 53
-      protocol: UDP
-  - ports:
-    - port: 53
-      protocol: TCP
-  # GitHub APIs
-  - to:
-    - ipBlock:
-        cidr: 140.82.121.5/32
-    - ipBlock:
-        cidr: 185.199.108.133/32
-    - ipBlock:
-        cidr: 185.199.109.133/32
-    - ipBlock:
-        cidr: 185.199.110.133/32
-    - ipBlock:
-        cidr: 185.199.111.133/32
-    ports:
-    - port: 443
-      protocol: TCP
+  # DNS (CoreDNS)
+  - action: Allow
+    protocol: UDP
+    destination:
+      ports:
+      - 53
+  # DNS (CoreDNS)
+  - action: Allow
+    protocol: TCP
+    destination:
+      ports:
+      - 53
   # Redis cluster - DEV
-  - to:
-    - ipBlock:
-        cidr: 10.50.100.10/32
-    ports:
-    - port: 30000
-      endPort: 30999
-      protocol: TCP
+  - action: Allow
+    protocol: TCP
+    destination:
+      nets:
+      - 10.50.100.10/32
+      ports:
+      - 30000:30999
+  # GitHub APIs
+  - action: Allow
+    protocol: TCP
+    destination:
+      nets:
+      - 140.82.112.6/32
+      - 185.199.108.133/32
+      - 185.199.109.133/32
+      - 185.199.110.133/32
+      - 185.199.111.133/32
+      ports:
+      - 443
+  # default deny
+  - action: Deny
