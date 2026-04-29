@@ -1,0 +1,197 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-egress-config
+  namespace: myapp-stg
+  labels:
+    app: myapp
+    env: stg
+    managed-by: egress-generator
+data:
+  envoy.yaml: "\nadmin:\n  address:\n    socket_address:\n      address: 127.0.0.1\n\
+    \      port_value: 9901\n\nstatic_resources:\n  listeners:\n    # =========================================================================\n\
+    \    # HTTP PROXY LISTENER (:15000)\n    # Apps use HTTP_PROXY=http://127.0.0.1:15000\
+    \ / HTTPS_PROXY=http://127.0.0.1:15000\n    # Environment: STG\n    # =========================================================================\n\
+    \    - name: http_proxy\n      address:\n        socket_address:\n          address:\
+    \ 0.0.0.0\n          port_value: 15000\n      filter_chains:\n        - filters:\n\
+    \            - name: envoy.filters.network.http_connection_manager\n         \
+    \     typed_config:\n                \"@type\": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\n\
+    \                stat_prefix: egress_http\n                http_protocol_options:\n\
+    \                  allow_absolute_url: true\n                upgrade_configs:\n\
+    \                  - upgrade_type: CONNECT\n                    connect_config:\
+    \ {}\n\n                access_log:\n                  - name: envoy.access_loggers.file\n\
+    \                    typed_config:\n                      \"@type\": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog\n\
+    \                      path: /dev/stdout\n                      log_format:\n\
+    \                        json_format:\n                          timestamp: \"\
+    %START_TIME%\"\n                          listener: \"http_proxy\"\n         \
+    \                 environment: \"stg\"\n                          method: \"%REQ(:METHOD)%\"\
+    \n                          destination: \"%REQ(:AUTHORITY)%\"\n             \
+    \             response_code: \"%RESPONSE_CODE%\"\n                          response_flags:\
+    \ \"%RESPONSE_FLAGS%\"\n                          bytes_rx: \"%BYTES_RECEIVED%\"\
+    \n                          bytes_tx: \"%BYTES_SENT%\"\n                     \
+    \     duration_ms: \"%DURATION%\"\n\n                route_config:\n         \
+    \         name: proxy_routes\n                  virtual_hosts:\n             \
+    \       # ─────────────────────────────────────────\n                    # ALLOWED\
+    \ HTTP/HTTPS DESTINATIONS (STG)\n                    # ─────────────────────────────────────────\n\
+    \                    # GitHub APIs\n                    - name: \"http_api_github_com_raw_githubusercontent_com_gist_githubusercontent_com_443\"\
+    \n                      domains:\n                        - \"api.github.com\"\
+    \n                        - \"api.github.com:443\"\n                        -\
+    \ \"raw.githubusercontent.com\"\n                        - \"raw.githubusercontent.com:443\"\
+    \n                        - \"gist.githubusercontent.com\"\n                 \
+    \       - \"gist.githubusercontent.com:443\"\n                      routes:\n\
+    \                        - match:\n                            connect_matcher:\
+    \ {}\n                          route:\n                            cluster: dynamic_forward_proxy\n\
+    \                            upgrade_configs:\n                              -\
+    \ upgrade_type: CONNECT\n                                connect_config: {}\n\
+    \                        - match:\n                            prefix: \"/\"\n\
+    \                          route:\n                            cluster: dynamic_forward_proxy\n\
+    \n                    # Internal REST API - STG\n                    - name: \"\
+    http_internal_api_stg_corp_local_80\"\n                      domains:\n      \
+    \                  - \"internal-api-stg.corp.local\"\n                       \
+    \ - \"internal-api-stg.corp.local:80\"\n                      routes:\n      \
+    \                  - match:\n                            connect_matcher: {}\n\
+    \                          route:\n                            cluster: dynamic_forward_proxy\n\
+    \                            upgrade_configs:\n                              -\
+    \ upgrade_type: CONNECT\n                                connect_config: {}\n\
+    \                        - match:\n                            prefix: \"/\"\n\
+    \                          route:\n                            cluster: dynamic_forward_proxy\n\
+    \n                    # Partner API - Staging\n                    - name: \"\
+    http_partner_api_staging_external_com_443\"\n                      domains:\n\
+    \                        - \"partner-api-staging.external.com\"\n            \
+    \            - \"partner-api-staging.external.com:443\"\n                    \
+    \  routes:\n                        - match:\n                            connect_matcher:\
+    \ {}\n                          route:\n                            cluster: dynamic_forward_proxy\n\
+    \                            upgrade_configs:\n                              -\
+    \ upgrade_type: CONNECT\n                                connect_config: {}\n\
+    \                        - match:\n                            prefix: \"/\"\n\
+    \                          route:\n                            cluster: dynamic_forward_proxy\n\
+    \n                    # All monitoring subdomains (Grafana, Prometheus, etc)\n\
+    \                    - name: \"http___monitoring_internal_443\"\n            \
+    \          domains:\n                        - \"*.monitoring.internal\"\n   \
+    \                   routes:\n                        - match:\n              \
+    \              connect_matcher: {}\n                          route:\n       \
+    \                     cluster: dynamic_forward_proxy\n                       \
+    \     upgrade_configs:\n                              - upgrade_type: CONNECT\n\
+    \                                connect_config: {}\n                        -\
+    \ match:\n                            prefix: \"/\"\n                        \
+    \  route:\n                            cluster: dynamic_forward_proxy\n\n    \
+    \                # ─────────────────────────────────────────\n               \
+    \     # DEFAULT DENY\n                    # ─────────────────────────────────────────\n\
+    \                    - name: deny_all\n                      domains: [\"*\"]\n\
+    \                      routes:\n                        - match:\n           \
+    \                 connect_matcher: {}\n                          direct_response:\n\
+    \                            status: 403\n                            body:\n\
+    \                              inline_string: '{\"error\":\"egress_denied\",\"\
+    listener\":\"http_proxy\",\"environment\":\"stg\"}'\n                        \
+    \  response_headers_to_add:\n                            - header:\n         \
+    \                       key: content-type\n                                value:\
+    \ application/json\n                        - match:\n                       \
+    \     prefix: \"/\"\n                          direct_response:\n            \
+    \                status: 403\n                            body:\n            \
+    \                  inline_string: '{\"error\":\"egress_denied\",\"listener\":\"\
+    http_proxy\",\"environment\":\"stg\"}'\n                          response_headers_to_add:\n\
+    \                            - header:\n                                key: content-type\n\
+    \                                value: application/json\n\n                http_filters:\n\
+    \                  - name: envoy.filters.http.dynamic_forward_proxy\n        \
+    \            typed_config:\n                      \"@type\": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig\n\
+    \                      dns_cache_config:\n                        name: dynamic_forward_proxy_cache\n\
+    \                        dns_lookup_family: V4_ONLY\n                  - name:\
+    \ envoy.filters.http.router\n                    typed_config:\n             \
+    \         \"@type\": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router\n\
+    \n    # =========================================================================\n\
+    \    # TRANSPARENT TCP PROXY LISTENER (:15001)\n    # Handles TCP/gRPC/mTLS traffic\
+    \ intercepted by iptables\n    # Environment: STG\n    # =========================================================================\n\
+    \    - name: transparent_tcp\n      address:\n        socket_address:\n      \
+    \    address: 0.0.0.0\n          port_value: 15001\n      transparent: true\n\
+    \      listener_filters:\n        - name: envoy.filters.listener.original_dst\n\
+    \          typed_config:\n            \"@type\": type.googleapis.com/envoy.extensions.filters.listener.original_dst.v3.OriginalDst\n\
+    \        - name: envoy.filters.listener.tls_inspector\n          typed_config:\n\
+    \            \"@type\": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector\n\
+    \n      filter_chains:\n        # ─────────────────────────────────────────\n\
+    \        # ALLOWED TCP DESTINATIONS (STG)\n        # ─────────────────────────────────────────\n\
+    \        # PostgreSQL database - STG\n        - name: \"tcp_172_16_10_5_5432\"\
+    \n          filter_chain_match:\n            destination_port: 5432\n        \
+    \    prefix_ranges:\n              - address_prefix: \"172.16.10.5\"\n       \
+    \         prefix_len: 32\n          filters:\n            - name: envoy.filters.network.tcp_proxy\n\
+    \              typed_config:\n                \"@type\": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy\n\
+    \                stat_prefix: \"tcp_172_16_10_5_5432\"\n                cluster:\
+    \ \"original_dst\"\n                access_log:\n                  - name: envoy.access_loggers.file\n\
+    \                    typed_config:\n                      \"@type\": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog\n\
+    \                      path: /dev/stdout\n                      log_format:\n\
+    \                        json_format:\n                          timestamp: \"\
+    %START_TIME%\"\n                          listener: \"transparent_tcp\"\n    \
+    \                      environment: \"stg\"\n                          decision:\
+    \ \"ALLOWED\"\n                          rule: \"PostgreSQL database - STG\"\n\
+    \                          destination: \"%UPSTREAM_HOST%\"\n                \
+    \          bytes_rx: \"%BYTES_RECEIVED%\"\n                          bytes_tx:\
+    \ \"%BYTES_SENT%\"\n                          duration_ms: \"%DURATION%\"\n\n\
+    \        # Payment gateway mTLS\n        - name: \"tcp_payment_gateway_partner_com_8443\"\
+    \n          filter_chain_match:\n            destination_port: 8443\n        \
+    \    prefix_ranges:\n              - address_prefix: \"127.0.0.1\"\n         \
+    \       prefix_len: 32\n          filters:\n            - name: envoy.filters.network.tcp_proxy\n\
+    \              typed_config:\n                \"@type\": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy\n\
+    \                stat_prefix: \"tcp_payment_gateway_partner_com_8443\"\n     \
+    \           cluster: \"mtls_payment_gateway_partner_com_8443\"\n             \
+    \   access_log:\n                  - name: envoy.access_loggers.file\n       \
+    \             typed_config:\n                      \"@type\": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog\n\
+    \                      path: /dev/stdout\n                      log_format:\n\
+    \                        json_format:\n                          timestamp: \"\
+    %START_TIME%\"\n                          listener: \"transparent_tcp\"\n    \
+    \                      environment: \"stg\"\n                          decision:\
+    \ \"ALLOWED\"\n                          rule: \"Payment gateway mTLS\"\n    \
+    \                      destination: \"%UPSTREAM_HOST%\"\n                    \
+    \      bytes_rx: \"%BYTES_RECEIVED%\"\n                          bytes_tx: \"\
+    %BYTES_SENT%\"\n                          duration_ms: \"%DURATION%\"\n\n    \
+    \    # Redis cluster - STG\n        - name: \"tcp_redis_stg_1_internal_30000\"\
+    \n          filter_chain_match:\n            port_range:\n              start:\
+    \ 30000\n              end: 30999\n            prefix_ranges:\n              -\
+    \ address_prefix: \"10.50.200.10\"\n                prefix_len: 32\n         \
+    \ filters:\n            - name: envoy.filters.network.tcp_proxy\n            \
+    \  typed_config:\n                \"@type\": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy\n\
+    \                stat_prefix: \"tcp_redis_stg_1_internal_30000\"\n           \
+    \     cluster: \"original_dst\"\n                access_log:\n               \
+    \   - name: envoy.access_loggers.file\n                    typed_config:\n   \
+    \                   \"@type\": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog\n\
+    \                      path: /dev/stdout\n                      log_format:\n\
+    \                        json_format:\n                          timestamp: \"\
+    %START_TIME%\"\n                          listener: \"transparent_tcp\"\n    \
+    \                      environment: \"stg\"\n                          decision:\
+    \ \"ALLOWED\"\n                          rule: \"Redis cluster - STG\"\n     \
+    \                     destination: \"%UPSTREAM_HOST%\"\n                     \
+    \     bytes_rx: \"%BYTES_RECEIVED%\"\n                          bytes_tx: \"%BYTES_SENT%\"\
+    \n                          duration_ms: \"%DURATION%\"\n\n        # ─────────────────────────────────────────\n\
+    \        # ALLOWED gRPC DESTINATIONS (STG)\n        # ─────────────────────────────────────────\n\
+    \        # ─────────────────────────────────────────\n        # DEFAULT DENY (catch-all)\n\
+    \        # ─────────────────────────────────────────\n        - filters:\n   \
+    \         - name: envoy.filters.network.rbac\n              typed_config:\n  \
+    \              \"@type\": type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC\n\
+    \                stat_prefix: tcp_denied\n                rules:\n           \
+    \       action: DENY\n                  policies: {}\n            - name: envoy.access_loggers.file\n\
+    \              typed_config:\n                \"@type\": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog\n\
+    \                path: /dev/stdout\n                log_format:\n            \
+    \      json_format:\n                    timestamp: \"%START_TIME%\"\n       \
+    \             listener: \"transparent_tcp\"\n                    environment:\
+    \ \"stg\"\n                    decision: \"DENIED\"\n                    destination:\
+    \ \"%UPSTREAM_HOST%\"\n                    sni: \"%REQUESTED_SERVER_NAME%\"\n\n\
+    \  clusters:\n    # Dynamic forward proxy for HTTP/HTTPS\n    - name: dynamic_forward_proxy\n\
+    \      lb_policy: CLUSTER_PROVIDED\n      cluster_type:\n        name: envoy.clusters.dynamic_forward_proxy\n\
+    \        typed_config:\n          \"@type\": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig\n\
+    \          dns_cache_config:\n            name: dynamic_forward_proxy_cache\n\
+    \            dns_lookup_family: V4_ONLY\n\n    # Original destination for transparent\
+    \ TCP / gRPC\n    - name: original_dst\n      type: ORIGINAL_DST\n      lb_policy:\
+    \ CLUSTER_PROVIDED\n      connect_timeout: 10s\n\n    # ─────────────────────────────────────────\n\
+    \    # mTLS CLUSTERS (STG)\n    # ─────────────────────────────────────────\n\
+    \    # Payment gateway mTLS\n    - name: \"mtls_payment_gateway_partner_com_8443\"\
+    \n      type: STRICT_DNS\n      lb_policy: ROUND_ROBIN\n      connect_timeout:\
+    \ 10s\n      load_assignment:\n        cluster_name: \"mtls_payment_gateway_partner_com_8443\"\
+    \n        endpoints:\n          - lb_endpoints:\n              - endpoint:\n \
+    \                 address:\n                    socket_address:\n            \
+    \          address: payment-gateway.partner.com\n                      port_value:\
+    \ 8443\n      transport_socket:\n        name: envoy.transport_sockets.tls\n \
+    \       typed_config:\n          \"@type\": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext\n\
+    \          sni: payment-gateway.partner.com\n          common_tls_context:\n \
+    \           tls_certificates:\n              - certificate_chain:\n          \
+    \        filename: /etc/envoy/certs/payment/client.crt\n                private_key:\n\
+    \                  filename: /etc/envoy/certs/payment/client.key\n           \
+    \ validation_context:\n              trusted_ca:\n                filename: /etc/envoy/certs/payment/ca.crt\n\
+    \n"

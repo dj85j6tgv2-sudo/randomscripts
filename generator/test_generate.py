@@ -8,6 +8,7 @@ import pytest
 
 from generator.generate import (
     Rule,
+    TlsConfig,
     load_allowlist,
     ConfigError,
     classify,
@@ -16,6 +17,13 @@ from generator.generate import (
     build_policy,
     write_outputs,
     _dump_policy,
+    _prepare_envoy_rules,
+    _build_no_proxy,
+    build_envoy_config,
+    build_proxy_env_configmap,
+    build_iptables_init,
+    write_envoy_outputs,
+    main,
 )
 
 
@@ -469,3 +477,373 @@ def test_build_policy_annotations_visible_in_metadata():
         assert "10.0.0.1:443 - GitHub APIs" in ann
         assert "172.16.0.0/16:30000-30999" in ann
         assert "api.example.com [1.2.3.4, 1.2.3.5]:443 - External API" in ann
+
+
+# ---------------------------------------------------------------------------
+# Envoy format tests
+# ---------------------------------------------------------------------------
+
+def test_rule_has_protocol_and_tls_fields():
+    r = Rule(("10.0.0.1",), (443,), None, None)
+    assert r.protocol == "tcp"
+    assert r.tls is None
+
+
+def test_rule_accepts_explicit_protocol():
+    r = Rule(("api.example.com",), (443,), None, None, protocol="http")
+    assert r.protocol == "http"
+
+
+def test_tls_config_stores_cert_key_ca():
+    t = TlsConfig(cert="/etc/envoy/certs/client.crt", key="/etc/envoy/certs/client.key", ca="/etc/envoy/certs/ca.crt")
+    assert t.cert == "/etc/envoy/certs/client.crt"
+    assert t.key == "/etc/envoy/certs/client.key"
+    assert t.ca == "/etc/envoy/certs/ca.crt"
+
+
+def test_tls_config_ca_optional():
+    t = TlsConfig(cert="/c.crt", key="/k.key")
+    assert t.ca is None
+
+
+def test_load_allowlist_parses_protocol(tmp_path):
+    path = write_yaml(tmp_path, """
+        egress:
+          - destination: api.example.com
+            port: 443
+            protocol: http
+    """)
+    rules = load_allowlist(path)
+    assert rules[0].protocol == "http"
+
+
+def test_load_allowlist_parses_grpc_protocol(tmp_path):
+    path = write_yaml(tmp_path, """
+        egress:
+          - destination: grpc.example.com
+            port: 4266
+            protocol: grpc
+    """)
+    rules = load_allowlist(path)
+    assert rules[0].protocol == "grpc"
+
+
+def test_load_allowlist_parses_tls(tmp_path):
+    path = write_yaml(tmp_path, """
+        egress:
+          - destination: payment.example.com
+            port: 8443
+            protocol: tcp
+            tls:
+              cert: /etc/envoy/certs/client.crt
+              key: /etc/envoy/certs/client.key
+              ca: /etc/envoy/certs/ca.crt
+    """)
+    rules = load_allowlist(path)
+    assert rules[0].tls is not None
+    assert rules[0].tls.cert == "/etc/envoy/certs/client.crt"
+    assert rules[0].tls.key == "/etc/envoy/certs/client.key"
+    assert rules[0].tls.ca == "/etc/envoy/certs/ca.crt"
+
+
+def test_load_allowlist_tls_missing_key_raises(tmp_path):
+    path = write_yaml(tmp_path, """
+        egress:
+          - destination: payment.example.com
+            port: 8443
+            protocol: tcp
+            tls:
+              cert: /etc/envoy/certs/client.crt
+    """)
+    with pytest.raises(ConfigError, match="tls block requires"):
+        load_allowlist(path)
+
+
+def test_prepare_envoy_rules_http_no_ip_resolution():
+    rules = [Rule(("api.example.com",), (443,), None, "External API", protocol="http")]
+    ctx = _prepare_envoy_rules(rules, {})
+    assert len(ctx["http_rules"]) == 1
+    assert ctx["http_rules"][0]["domains"] == ["api.example.com"]
+    assert ctx["http_rules"][0]["port"] == 443
+    assert ctx["tcp_rules"] == []
+    assert ctx["grpc_rules"] == []
+
+
+def test_prepare_envoy_rules_http_wildcard_passes_through():
+    rules = [Rule(("*.example.com",), (443,), None, None, protocol="http")]
+    ctx = _prepare_envoy_rules(rules, {})
+    assert ctx["http_rules"][0]["domains"] == ["*.example.com"]
+
+
+def test_prepare_envoy_rules_tcp_resolved_to_ips():
+    rules = [Rule(("redis.internal",), (6379,), None, "Redis", protocol="tcp")]
+    resolved = {"redis.internal": ["10.0.0.5"]}
+    ctx = _prepare_envoy_rules(rules, resolved)
+    assert len(ctx["tcp_rules"]) == 1
+    chain = ctx["tcp_rules"][0]
+    assert chain["ip_addresses"] == [{"address": "10.0.0.5", "prefix_len": 32}]
+    assert chain["port"] == 6379
+    assert chain["cluster_name"] == "original_dst"
+
+
+def test_prepare_envoy_rules_tcp_cidr():
+    rules = [Rule(("10.20.30.0/24",), (9092,), None, "Kafka", protocol="tcp")]
+    ctx = _prepare_envoy_rules(rules, {})
+    chain = ctx["tcp_rules"][0]
+    assert chain["ip_addresses"] == [{"address": "10.20.30.0", "prefix_len": 24}]
+
+
+def test_prepare_envoy_rules_tcp_direct_ip():
+    rules = [Rule(("10.0.0.1",), (443,), None, None, protocol="tcp")]
+    ctx = _prepare_envoy_rules(rules, {})
+    assert ctx["tcp_rules"][0]["ip_addresses"] == [{"address": "10.0.0.1", "prefix_len": 32}]
+
+
+def test_prepare_envoy_rules_grpc_emitted_in_grpc_rules():
+    rules = [Rule(("grpc.internal",), (4266,), None, "gRPC API", protocol="grpc")]
+    resolved = {"grpc.internal": ["10.1.2.3"]}
+    ctx = _prepare_envoy_rules(rules, resolved)
+    assert ctx["grpc_rules"] != []
+    assert ctx["tcp_rules"] == []
+    chain = ctx["grpc_rules"][0]
+    assert chain["is_grpc"] is True
+    assert chain["ip_addresses"] == [{"address": "10.1.2.3", "prefix_len": 32}]
+
+
+def test_prepare_envoy_rules_mtls_cluster_emitted():
+    tls = TlsConfig(cert="/c.crt", key="/k.key", ca="/ca.crt")
+    rules = [Rule(("payment.example.com",), (8443,), None, "Payment GW", protocol="tcp", tls=tls)]
+    resolved = {"payment.example.com": ["1.2.3.4"]}
+    ctx = _prepare_envoy_rules(rules, resolved)
+    assert ctx["mtls_clusters"] != []
+    cluster = ctx["mtls_clusters"][0]
+    assert cluster["tls"] == tls
+    assert cluster["cluster_name"].startswith("mtls_")
+    assert cluster["sni"] == "payment.example.com"
+
+
+def test_prepare_envoy_rules_wildcard_in_tcp_skipped_with_warning(caplog):
+    import logging
+    rules = [Rule(("*.internal",), (6379,), None, None, protocol="tcp")]
+    with caplog.at_level(logging.WARNING, logger="egress.generate"):
+        ctx = _prepare_envoy_rules(rules, {})
+    assert ctx["tcp_rules"] == []
+    assert any("Wildcard" in r.message for r in caplog.records)
+
+
+def test_prepare_envoy_rules_port_range_preserved():
+    rules = [Rule(("10.0.0.1",), ((30000, 30999),), None, None, protocol="tcp")]
+    ctx = _prepare_envoy_rules(rules, {})
+    chain = ctx["tcp_rules"][0]
+    assert chain["port"] is None
+    assert chain["port_range"] == {"start": 30000, "end": 30999}
+
+
+def test_prepare_envoy_rules_multi_port_expands_chains():
+    rules = [Rule(("10.0.0.1",), (80, 443), None, None, protocol="tcp")]
+    ctx = _prepare_envoy_rules(rules, {})
+    assert len(ctx["tcp_rules"]) == 2
+    ports = {c["port"] for c in ctx["tcp_rules"]}
+    assert ports == {80, 443}
+
+
+def test_prepare_envoy_rules_dedupes_ips_across_merged_rules():
+    rules = [
+        Rule(("10.0.0.1",), (443,), None, "Rule A", protocol="tcp"),
+        Rule(("10.0.0.1",), (443,), None, "Rule B", protocol="tcp"),  # same IP+port
+    ]
+    ctx = _prepare_envoy_rules(rules, {})
+    # Should be merged into one chain, IP deduplicated
+    assert len(ctx["tcp_rules"]) == 1
+    assert len(ctx["tcp_rules"][0]["ip_addresses"]) == 1
+
+
+def test_no_proxy_does_not_include_http_destinations():
+    no_proxy = _build_no_proxy()
+    # Should only have k8s internals, never specific hostnames/IPs
+    assert "example.com" not in no_proxy
+    assert "api.github.com" not in no_proxy
+    assert "localhost" in no_proxy
+    assert ".svc.cluster.local" in no_proxy
+
+
+def test_no_proxy_includes_k8s_internals():
+    no_proxy = _build_no_proxy()
+    assert "127.0.0.1" in no_proxy
+    assert ".cluster.local" in no_proxy
+
+
+def test_iptables_init_is_constant_across_calls():
+    template_dir = Path(__file__).resolve().parent / "templates"
+    s1 = build_iptables_init(template_dir)
+    s2 = build_iptables_init(template_dir)
+    assert s1 == s2
+
+
+def test_iptables_init_redirects_all_tcp_to_15001():
+    template_dir = Path(__file__).resolve().parent / "templates"
+    script = build_iptables_init(template_dir)
+    assert "REDIRECT --to-ports 15001" in script
+    assert "--uid-owner 1337" in script
+    assert "127.0.0.0/8" in script
+
+
+def test_iptables_init_skips_port_15000():
+    template_dir = Path(__file__).resolve().parent / "templates"
+    script = build_iptables_init(template_dir)
+    assert "--dport 15000" in script
+    assert "RETURN" in script
+
+
+def test_write_envoy_outputs_creates_exactly_expected_files(tmp_path):
+    rules = [
+        Rule(("api.example.com",), (443,), None, "API", protocol="http"),
+        Rule(("10.0.0.5",), (6379,), None, "Redis", protocol="tcp"),
+    ]
+    template_dir = Path(__file__).resolve().parent / "templates"
+    write_envoy_outputs(
+        tmp_path, "myapp", ["dev", "prd"],
+        {"dev": rules, "prd": rules},
+        {"api.example.com": ["1.2.3.4"]},
+        template_dir,
+    )
+    envoy_dir = tmp_path / "envoy"
+    assert (envoy_dir / "iptables-init.sh").exists()
+    assert (envoy_dir / "iptables-configmap.yaml").exists()
+    for env in ("dev", "prd"):
+        assert (envoy_dir / f"envoy-config-{env}.yaml").exists()
+        assert (envoy_dir / f"proxy-env-{env}.yaml").exists()
+    # No deployment patches or kustomization
+    assert not list(envoy_dir.glob("deployment-patch*"))
+    assert not list(envoy_dir.glob("kustomization*"))
+    # DNS audit trail at root
+    assert (tmp_path / "resolved-ips.json").exists()
+
+
+def test_write_envoy_outputs_configmap_is_valid_yaml(tmp_path):
+    import yaml as _yaml
+    rules = [Rule(("10.0.0.1",), (443,), None, None, protocol="tcp")]
+    template_dir = Path(__file__).resolve().parent / "templates"
+    write_envoy_outputs(
+        tmp_path, "myapp", ["dev"],
+        {"dev": rules},
+        {},
+        template_dir,
+    )
+    content = (tmp_path / "envoy" / "envoy-config-dev.yaml").read_text()
+    obj = _yaml.safe_load(content)
+    assert obj["kind"] == "ConfigMap"
+    assert "envoy.yaml" in obj["data"]
+
+
+def test_write_envoy_outputs_proxy_env_configmap_present(tmp_path):
+    import yaml as _yaml
+    template_dir = Path(__file__).resolve().parent / "templates"
+    write_envoy_outputs(
+        tmp_path, "myapp", ["dev"],
+        {"dev": []},
+        {},
+        template_dir,
+    )
+    content = (tmp_path / "envoy" / "proxy-env-dev.yaml").read_text()
+    obj = _yaml.safe_load(content)
+    assert obj["kind"] == "ConfigMap"
+    assert "HTTP_PROXY" in obj["data"]
+    assert "HTTPS_PROXY" in obj["data"]
+    assert "NO_PROXY" in obj["data"]
+    assert "example.com" not in obj["data"]["NO_PROXY"]
+
+
+def test_write_envoy_outputs_is_deterministic(tmp_path):
+    rules = [
+        Rule(("api.example.com",), (443,), None, "API", protocol="http"),
+        Rule(("10.0.0.5",), (6379,), None, "Redis", protocol="tcp"),
+    ]
+    template_dir = Path(__file__).resolve().parent / "templates"
+    resolved = {"api.example.com": ["1.2.3.4"]}
+
+    out1 = tmp_path / "run1"
+    out2 = tmp_path / "run2"
+    for out in (out1, out2):
+        write_envoy_outputs(
+            out, "myapp", ["prd"], {"prd": rules}, resolved, template_dir
+        )
+    for fname in (
+        "envoy/envoy-config-prd.yaml",
+        "envoy/proxy-env-prd.yaml",
+        "envoy/iptables-init.sh",
+        "envoy/iptables-configmap.yaml",
+        "resolved-ips.json",
+    ):
+        assert (out1 / fname).read_bytes() == (out2 / fname).read_bytes(), fname
+
+
+def test_cli_envoy_format_end_to_end(tmp_path, monkeypatch):
+    allowlist = tmp_path / "allowlist.yaml"
+    allowlist.write_text(textwrap.dedent("""
+        egress:
+          - destination: api.example.com
+            port: 443
+            protocol: http
+            envs: [dev, prd]
+          - destination: redis.internal
+            port: 6379
+            protocol: tcp
+            envs: [dev, prd]
+          - destination: grpc.internal
+            port: 4266
+            protocol: grpc
+            envs: [prd]
+    """))
+    out_dir = tmp_path / "out"
+
+    def fake_resolve(host):
+        data = {
+            "api.example.com": ["9.9.9.9"],
+            "redis.internal": ["10.0.0.5"],
+            "grpc.internal": ["10.0.0.6"],
+        }
+        return (host, [], data[host])
+
+    monkeypatch.setattr("generator.generate.socket.gethostbyname_ex", fake_resolve)
+
+    rc = main([
+        "--allowlist", str(allowlist),
+        "--app", "myapp",
+        "--output-dir", str(out_dir),
+        "--envs", "dev,prd",
+        "--format", "envoy",
+    ])
+    assert rc == 0
+    envoy_dir = out_dir / "envoy"
+    for env in ("dev", "prd"):
+        assert (envoy_dir / f"envoy-config-{env}.yaml").exists()
+        assert (envoy_dir / f"proxy-env-{env}.yaml").exists()
+    assert (envoy_dir / "iptables-init.sh").exists()
+    assert (envoy_dir / "iptables-configmap.yaml").exists()
+    assert (out_dir / "resolved-ips.json").exists()
+
+
+def test_cli_envoy_format_does_not_write_networkpolicy(tmp_path, monkeypatch):
+    allowlist = tmp_path / "allowlist.yaml"
+    allowlist.write_text(textwrap.dedent("""
+        egress:
+          - destination: 10.0.0.1
+            port: 443
+            protocol: tcp
+    """))
+    out_dir = tmp_path / "out"
+
+    monkeypatch.setattr(
+        "generator.generate.socket.gethostbyname_ex",
+        lambda h: (h, [], []),
+    )
+
+    rc = main([
+        "--allowlist", str(allowlist),
+        "--app", "myapp",
+        "--output-dir", str(out_dir),
+        "--format", "envoy",
+    ])
+    assert rc == 0
+    assert not list(out_dir.glob("networkpolicy-*.yaml"))

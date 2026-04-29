@@ -1,4 +1,4 @@
-"""Calico NetworkPolicy generator from egress-allowlist.yaml."""
+"""Calico NetworkPolicy / Envoy egress config generator from egress-allowlist.yaml."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ import argparse
 import ipaddress
 import json as _json
 import logging
+import re
 import socket
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -68,11 +69,20 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class TlsConfig:
+    cert: str
+    key: str
+    ca: str | None = None
+
+
+@dataclass(frozen=True)
 class Rule:
     destinations: tuple[str, ...]
     ports: tuple[Port, ...]
     envs: frozenset[str] | None
     description: str | None
+    protocol: str = "tcp"
+    tls: TlsConfig | None = None
 
 
 def _collect_destinations(entry: dict) -> tuple[str, ...]:
@@ -149,9 +159,24 @@ def load_allowlist(path: Path | str) -> list[Rule]:
                 ports=_collect_ports(entry),
                 envs=envs,
                 description=entry.get("description"),
+                protocol=protocol,
+                tls=_collect_tls(entry),
             )
         )
     return rules
+
+
+def _collect_tls(entry: dict) -> TlsConfig | None:
+    raw = entry.get("tls")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError(f"'tls' must be a mapping: {entry!r}")
+    cert = raw.get("cert")
+    key = raw.get("key")
+    if not cert or not key:
+        raise ConfigError(f"tls block requires 'cert' and 'key': {entry!r}")
+    return TlsConfig(cert=cert, key=key, ca=raw.get("ca"))
 
 
 def _rule_annotation_line(rule: Rule, resolved: dict[str, list[str]]) -> str:
@@ -319,6 +344,299 @@ def _dump_policy(policy: dict) -> str:
     return "\n".join(parts) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Envoy config generation
+# ---------------------------------------------------------------------------
+
+def _sanitize(name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]", "_", name)
+
+
+def _ip_entries_for_dest(dest: str, resolved: dict[str, list[str]]) -> list[dict]:
+    """Return list of {address, prefix_len} dicts for a destination."""
+    kind, value = classify(dest)
+    if kind == "wildcard":
+        log.warning(
+            "Wildcard %r cannot be used in TCP/gRPC filter chains (no runtime IP matching); skipping.",
+            value,
+        )
+        return []
+    if kind == "cidr":
+        net = ipaddress.ip_network(value, strict=False)
+        return [{"address": str(net.network_address), "prefix_len": net.prefixlen}]
+    if kind == "ip":
+        return [{"address": value, "prefix_len": 32}]
+    # hostname
+    ips = resolved.get(value, [])
+    if not ips:
+        log.warning("Hostname %r has no resolved IPs; skipping in TCP filter chain.", value)
+    return [{"address": ip, "prefix_len": 32} for ip in ips]
+
+
+def _prepare_envoy_rules(rules: list[Rule], resolved: dict[str, list[str]]) -> dict:
+    """Partition rules into http_rules, tcp_rules, grpc_rules, mtls_clusters for Jinja2."""
+    http_rules = []
+    tcp_chains: dict[tuple, dict] = {}   # keyed by (port_key, cluster_name)
+    grpc_chains: dict[tuple, dict] = {}
+
+    def _port_key(rule: Rule) -> tuple:
+        p = rule.ports[0]
+        return p if isinstance(p, tuple) else (p,)
+
+    def _port_label(rule: Rule) -> str:
+        p = rule.ports[0]
+        return f"{p[0]}_{p[1]}" if isinstance(p, tuple) else str(p)
+
+    for rule in rules:
+        if rule.protocol in ("http", "https"):
+            # Collect all destinations as domains; wildcards are fine for HCM matching
+            domains = list(rule.destinations)
+            for port in rule.ports:
+                port_val = port[0] if isinstance(port, tuple) else port
+                name = f"http_{_sanitize('_'.join(rule.destinations))}_{port_val}"
+                http_rules.append({
+                    "name": name,
+                    "domains": domains,
+                    "port": port_val,
+                    "description": rule.description,
+                    "envs": list(rule.envs) if rule.envs else [],
+                })
+        elif rule.protocol == "grpc":
+            for port in rule.ports:
+                port_key = port if isinstance(port, tuple) else (port,)
+                cluster = (
+                    f"mtls_{_sanitize(rule.destinations[0])}_{_sanitize(str(port_key[0]))}"
+                    if rule.tls else "original_dst"
+                )
+                chain_key = (port_key, cluster)
+                if chain_key not in grpc_chains:
+                    stat = f"{_sanitize(rule.destinations[0])}_{_sanitize(str(port_key[0]))}"
+                    grpc_chains[chain_key] = {
+                        "name": f"grpc_{stat}",
+                        "stat_name": stat,
+                        "description": rule.description,
+                        "port": port_key[0] if len(port_key) == 1 else None,
+                        "port_range": {"start": port_key[0], "end": port_key[1]} if len(port_key) == 2 else None,
+                        "cluster_name": cluster,
+                        "ip_addresses": [],
+                        "tls": rule.tls,
+                        "sni": next((d for d in rule.destinations if classify(d)[0] == "hostname"), None),
+                        "upstream_port": port_key[0],
+                        "is_grpc": True,
+                    }
+                for dest in rule.destinations:
+                    grpc_chains[chain_key]["ip_addresses"].extend(
+                        _ip_entries_for_dest(dest, resolved)
+                    )
+        else:  # tcp
+            for port in rule.ports:
+                port_key = port if isinstance(port, tuple) else (port,)
+                cluster = (
+                    f"mtls_{_sanitize(rule.destinations[0])}_{_sanitize(str(port_key[0]))}"
+                    if rule.tls else "original_dst"
+                )
+                chain_key = (port_key, cluster)
+                if chain_key not in tcp_chains:
+                    stat = f"{_sanitize(rule.destinations[0])}_{_sanitize(str(port_key[0]))}"
+                    tcp_chains[chain_key] = {
+                        "name": f"tcp_{stat}",
+                        "stat_name": stat,
+                        "description": rule.description,
+                        "port": port_key[0] if len(port_key) == 1 else None,
+                        "port_range": {"start": port_key[0], "end": port_key[1]} if len(port_key) == 2 else None,
+                        "cluster_name": cluster,
+                        "ip_addresses": [],
+                        "tls": rule.tls,
+                        "sni": next((d for d in rule.destinations if classify(d)[0] == "hostname"), None),
+                        "upstream_port": port_key[0],
+                        "is_grpc": False,
+                    }
+                for dest in rule.destinations:
+                    tcp_chains[chain_key]["ip_addresses"].extend(
+                        _ip_entries_for_dest(dest, resolved)
+                    )
+
+    # Dedupe IPs within each chain and sort deterministically
+    def _dedup_ips(chain: dict) -> dict:
+        seen = set()
+        deduped = []
+        for entry in chain["ip_addresses"]:
+            key = (entry["address"], entry["prefix_len"])
+            if key not in seen:
+                seen.add(key)
+                deduped.append(entry)
+        chain["ip_addresses"] = sorted(deduped, key=lambda e: (e["address"], e["prefix_len"]))
+        return chain
+
+    tcp_rules = [_dedup_ips(c) for c in tcp_chains.values() if c["ip_addresses"]]
+    grpc_rules = [_dedup_ips(c) for c in grpc_chains.values() if c["ip_addresses"]]
+
+    # Sort filter chains deterministically
+    def _chain_sort_key(c: dict) -> tuple:
+        port = c["port"] or (c["port_range"]["start"] if c["port_range"] else 0)
+        first_ip = c["ip_addresses"][0]["address"] if c["ip_addresses"] else ""
+        return (port, first_ip)
+
+    tcp_rules.sort(key=_chain_sort_key)
+    grpc_rules.sort(key=_chain_sort_key)
+
+    # Collect mTLS clusters (unique by cluster_name)
+    mtls_seen: set[str] = set()
+    mtls_clusters = []
+    for chain in [*tcp_rules, *grpc_rules]:
+        if chain["tls"] and chain["cluster_name"] not in mtls_seen:
+            if not chain["sni"]:
+                log.warning(
+                    "mTLS rule %r has no hostname destination; SNI will be empty and peer cert verification may fail.",
+                    chain["description"] or chain["cluster_name"],
+                )
+            mtls_seen.add(chain["cluster_name"])
+            mtls_clusters.append(chain)
+
+    return {
+        "http_rules": http_rules,
+        "tcp_rules": tcp_rules,
+        "grpc_rules": grpc_rules,
+        "mtls_clusters": mtls_clusters,
+    }
+
+
+def _render_template(template_path: Path, context: dict) -> str:
+    try:
+        from jinja2 import Environment, FileSystemLoader, StrictUndefined
+    except ImportError as exc:
+        raise ConfigError(
+            "jinja2 is required for --format envoy. Run: pip install jinja2"
+        ) from exc
+    env = Environment(
+        loader=FileSystemLoader(str(template_path.parent)),
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+        undefined=StrictUndefined,
+    )
+    return env.get_template(template_path.name).render(**context)
+
+
+def _wrap_in_configmap(
+    name: str,
+    namespace: str,
+    data_key: str,
+    content: str,
+    labels: dict[str, str] | None = None,
+) -> str:
+    obj: dict = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": name, "namespace": namespace},
+        "data": {data_key: content},
+    }
+    if labels:
+        obj["metadata"]["labels"] = labels
+    return yaml.dump(obj, sort_keys=False, default_flow_style=False, allow_unicode=True)
+
+
+def build_envoy_config(
+    app: str,
+    env: str,
+    rules: list[Rule],
+    resolved: dict[str, list[str]],
+    template_dir: Path,
+) -> str:
+    context = _prepare_envoy_rules(rules, resolved)
+    context["target_env"] = env
+    context["app"] = app
+    return _render_template(template_dir / "envoy.yaml.j2", context)
+
+
+def _build_no_proxy() -> str:
+    """Return NO_PROXY value: only k8s internals. Never include allowlist HTTP destinations."""
+    return (
+        "localhost,127.0.0.1,"
+        "${POD_CIDR:-10.244.0.0/16},"
+        "${SERVICE_CIDR:-10.96.0.0/12},"
+        ".svc,.svc.cluster.local,.cluster.local"
+    )
+
+
+def build_proxy_env_configmap(app: str, env: str) -> str:
+    proxy_url = "http://127.0.0.1:15000"
+    no_proxy = _build_no_proxy()
+    obj = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": f"envoy-proxy-env-{env}",
+            "namespace": f"{app}-{env}",
+            "labels": {"app": app, "env": env, "managed-by": "egress-generator"},
+        },
+        "data": {
+            "HTTP_PROXY": proxy_url,
+            "HTTPS_PROXY": proxy_url,
+            "http_proxy": proxy_url,
+            "https_proxy": proxy_url,
+            "NO_PROXY": no_proxy,
+            "no_proxy": no_proxy,
+        },
+    }
+    return yaml.dump(obj, sort_keys=False, default_flow_style=False, allow_unicode=True)
+
+
+def build_iptables_init(template_dir: Path) -> str:
+    return _render_template(template_dir / "iptables-init.sh.j2", {})
+
+
+def write_envoy_outputs(
+    out_dir: Path | str,
+    app: str,
+    envs: list[str],
+    rules_by_env: dict[str, list[Rule]],
+    resolved: dict[str, list[str]],
+    template_dir: Path,
+) -> None:
+    out = Path(out_dir)
+    envoy_dir = out / "envoy"
+    envoy_dir.mkdir(parents=True, exist_ok=True)
+
+    # Shared iptables-init script (allowlist-agnostic)
+    iptables_script = build_iptables_init(template_dir)
+    (envoy_dir / "iptables-init.sh").write_text(iptables_script)
+
+    # Shared iptables ConfigMap (namespace-neutral placeholder)
+    iptables_cm = _wrap_in_configmap(
+        name="envoy-iptables-init",
+        namespace=app,
+        data_key="iptables-init.sh",
+        content=iptables_script,
+        labels={"managed-by": "egress-generator"},
+    )
+    (envoy_dir / "iptables-configmap.yaml").write_text(iptables_cm)
+
+    for env in sorted(envs):
+        rules = rules_by_env[env]
+
+        # Envoy config per env
+        envoy_yaml_content = build_envoy_config(app, env, rules, resolved, template_dir)
+        envoy_cm = _wrap_in_configmap(
+            name="envoy-egress-config",
+            namespace=f"{app}-{env}",
+            data_key="envoy.yaml",
+            content=envoy_yaml_content,
+            labels={"app": app, "env": env, "managed-by": "egress-generator"},
+        )
+        (envoy_dir / f"envoy-config-{env}.yaml").write_text(envoy_cm)
+
+        # Proxy env ConfigMap per env
+        proxy_cm = build_proxy_env_configmap(app, env)
+        (envoy_dir / f"proxy-env-{env}.yaml").write_text(proxy_cm)
+
+    # DNS audit trail (shared with calico/kubernetes formats)
+    sorted_resolved = {k: sorted(v) for k, v in sorted(resolved.items())}
+    (out / "resolved-ips.json").write_text(
+        _json.dumps(sorted_resolved, indent=2, sort_keys=True) + "\n"
+    )
+
+
 def _parse_selectors(items: list[str] | None, app: str) -> dict[str, str]:
     if not items:
         return {"app": app}
@@ -349,14 +667,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--format",
-        choices=["calico", "kubernetes"],
+        choices=["calico", "kubernetes", "envoy"],
         default="calico",
-        help="Output format: calico (crd.projectcalico.org/v1) or kubernetes (networking.k8s.io/v1).",
+        help=(
+            "Output format: calico (crd.projectcalico.org/v1), "
+            "kubernetes (networking.k8s.io/v1), or envoy (ConfigMaps + iptables script)."
+        ),
     )
     args = p.parse_args(argv)
     try:
         rules = load_allowlist(args.allowlist)
-        selector = _parse_selectors(args.selector, args.app)
+        # selector only needed for calico/kubernetes formats
+        selector = _parse_selectors(args.selector, args.app) if args.format != "envoy" else {}
     except ConfigError as exc:
         log.error("%s", exc)
         return 1
@@ -365,17 +687,30 @@ def main(argv: list[str] | None = None) -> int:
     ]
     resolved, failed = resolve_hostnames(hostnames)
     envs = [e.strip() for e in args.envs.split(",") if e.strip()]
-    try:
-        policies = {
-            env: build_policy(
-                args.app, env, filter_by_env(rules, env), selector, resolved, args.format
+
+    if args.format == "envoy":
+        template_dir = Path(__file__).parent / "templates"
+        rules_by_env = {env: filter_by_env(rules, env) for env in envs}
+        try:
+            write_envoy_outputs(
+                args.output_dir, args.app, envs, rules_by_env, resolved, template_dir
             )
-            for env in envs
-        }
-    except ConfigError as exc:
-        log.error("%s", exc)
-        return 1
-    write_outputs(args.output_dir, policies, resolved)
+        except ConfigError as exc:
+            log.error("%s", exc)
+            return 1
+    else:
+        try:
+            policies = {
+                env: build_policy(
+                    args.app, env, filter_by_env(rules, env), selector, resolved, args.format
+                )
+                for env in envs
+            }
+        except ConfigError as exc:
+            log.error("%s", exc)
+            return 1
+        write_outputs(args.output_dir, policies, resolved)
+
     if failed:
         log.error("Unresolved hostnames: %s", ", ".join(failed))
         return 2

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-proxy-env-dev
+  namespace: myapp-dev
+  labels:
+    app: myapp
+    env: dev
+    managed-by: egress-generator
+data:
+  HTTP_PROXY: http://127.0.0.1:15000
+  HTTPS_PROXY: http://127.0.0.1:15000
+  http_proxy: http://127.0.0.1:15000
+  https_proxy: http://127.0.0.1:15000
+  NO_PROXY: localhost,127.0.0.1,${POD_CIDR:-10.244.0.0/16},${SERVICE_CIDR:-10.96.0.0/12},.svc,.svc.cluster.local,.cluster.local
+  no_proxy: localhost,127.0.0.1,${POD_CIDR:-10.244.0.0/16},${SERVICE_CIDR:-10.96.0.0/12},.svc,.svc.cluster.local,.cluster.local
