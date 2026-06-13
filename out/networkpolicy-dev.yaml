@@ -4,7 +4,7 @@ metadata:
   name: python-app-egress
   namespace: python-app-dev
   annotations:
-    egress.policy/rules: 'api.github.com [140.82.112.6], raw.githubusercontent.com
+    egress.policy/rules: 'api.github.com [140.82.114.6], raw.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133], gist.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133]:443 - GitHub
       APIs
@@ -57,7 +57,7 @@ spec:
     protocol: TCP
     destination:
       nets:
-      - 140.82.112.6/32
+      - 140.82.114.6/32
       - 185.199.108.133/32
       - 185.199.109.133/32
       - 185.199.110.133/32
