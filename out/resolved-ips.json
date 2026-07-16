@@ -1,6 +1,6 @@
 {
   "api.github.com": [
-    "140.82.113.5"
+    "140.82.112.5"
   ],
   "gist.githubusercontent.com": [
     "185.199.108.133",
@@ -14,10 +14,16 @@
   "partner-api.external.com": [
     "54.237.57.21"
   ],
+  "payment-gateway.partner.com": [
+    "0.0.0.0"
+  ],
   "raw.githubusercontent.com": [
     "185.199.108.133",
     "185.199.109.133",
     "185.199.110.133",
     "185.199.111.133"
+  ],
+  "secure-api.partner.com": [
+    "0.0.0.0"
   ]
 }
