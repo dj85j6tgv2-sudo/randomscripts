@@ -4,7 +4,7 @@ metadata:
   name: python-app-egress
   namespace: python-app-stg
   annotations:
-    egress.policy/rules: 'api.github.com [172.182.252.137], raw.githubusercontent.com
+    egress.policy/rules: 'api.github.com [140.82.114.6], raw.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133], gist.githubusercontent.com
       [185.199.108.133, 185.199.109.133, 185.199.110.133, 185.199.111.133]:443 - GitHub
       APIs
@@ -66,6 +66,18 @@ spec:
       - 10.50.200.10/32
       ports:
       - 30000:30999
+  # GitHub APIs
+  - action: Allow
+    protocol: TCP
+    destination:
+      nets:
+      - 140.82.114.6/32
+      - 185.199.108.133/32
+      - 185.199.109.133/32
+      - 185.199.110.133/32
+      - 185.199.111.133/32
+      ports:
+      - 443
   # PostgreSQL database - STG
   - action: Allow
     protocol: TCP
@@ -74,18 +86,6 @@ spec:
       - 172.16.10.5/32
       ports:
       - 5432
-  # GitHub APIs
-  - action: Allow
-    protocol: TCP
-    destination:
-      nets:
-      - 172.182.252.137/32
-      - 185.199.108.133/32
-      - 185.199.109.133/32
-      - 185.199.110.133/32
-      - 185.199.111.133/32
-      ports:
-      - 443
   # Partner API - Staging
   - action: Allow
     protocol: TCP
